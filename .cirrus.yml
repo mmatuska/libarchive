@@ -4,8 +4,6 @@ env:
 
 main_task:
   matrix:
-    container:
-      image: fedora:29
     freebsd_instance:
       image: freebsd-12-0-release-amd64
     freebsd_instance:
@@ -20,7 +18,7 @@ main_task:
     env:
       BS: cmake
   prepare_script:
-  - ./build/ci/cirrus_ci.sh prepare
+  - ./build/ci/cirrus_ci/ci.sh prepare
   configure_script:
   - ./build/ci/build.sh -a autogen
   - ./build/ci/build.sh -a configure
@@ -28,26 +26,59 @@ main_task:
   - ./build/ci/build.sh -a build
   test_script:
   - ./build/ci/build.sh -a test
-  - ./build/ci/cirrus_ci.sh test
+  - ./build/ci/cirrus_ci/ci.sh test
 
-Windows_task:
-  windows_container:
-    image: cirrusci/windowsservercore:2019
-    os_version: 2019
+Fedora_29_task:
+  container:
+    dockerfile: build/ci/cirrus_ci/Dockerfile.fedora29
   matrix:
     env:
-      BE: mingw-gcc
+      BS: autotools
     env:
-      BE: cygwin-gcc
-    env:
-      BE: msvc
-  prepare_script:
-  - build\ci\cirrus_ci.cmd prepare
-  deplibs_script:
-  - build\ci\cirrus_ci.cmd deplibs
+      BS: cmake
   configure_script:
-  - build\ci\cirrus_ci.cmd configure
+  - ./build/ci/build.sh -a autogen
+  - ./build/ci/build.sh -a configure
   build_script:
-  - build\ci\cirrus_ci.cmd build
+  - ./build/ci/build.sh -a build
   test_script:
-  - build\ci\cirrus_ci.cmd test
+  - ./build/ci/build.sh -a test
+
+Windows_MSVC_task:
+  windows_container:
+    dockerfile: build/ci/cirrus_ci/Dockerfile.msvc
+    os_version: 2019
+  env:
+    BE: msvc
+  configure_script:
+  - build\ci\cirrus_ci\ci.cmd configure
+  build_script:
+  - build\ci\cirrus_ci\ci.cmd build
+  test_script:
+  - build\ci\cirrus_ci\ci.cmd test
+
+Windows_MinGW_task:
+  windows_container:
+    dockerfile: build/ci/cirrus_ci/Dockerfile.mingw
+    os_version: 2019
+  env:
+    BE: mingw-gcc
+  configure_script:
+  - build\ci\cirrus_ci\ci.cmd configure
+  build_script:
+  - build\ci\cirrus_ci\ci.cmd build
+  test_script:
+  - build\ci\cirrus_ci\ci.cmd test
+
+Windows_Cygwin_task:
+  windows_container:
+    dockerfile: build/ci/cirrus_ci/Dockerfile.cygwin
+    os_version: 2019
+  env:
+    BE: cygwin-gcc
+  configure_script:
+  - build\ci\cirrus_ci\ci.cmd configure
+  build_script:
+  - build\ci\cirrus_ci\ci.cmd build
+  test_script:
+  - build\ci\cirrus_ci\ci.cmd test
