@@ -116,6 +116,8 @@ __FBSDID("$FreeBSD: head/lib/libarchive/archive_entry.c 201096 2009-12-28 02:41:
 		if (ns < 0) { --t; ns += 1000000000; } \
 	} while (0)
 
+static unsigned long ae_fflags_to_platform_fflags(la_uint64_t fflags);
+static la_uint64_t ae_platform_fflags_to_fflags(la_uint64_t fflags);
 static char *	 ae_fflagstostr(unsigned long bitset, unsigned long bitclear);
 static const wchar_t	*ae_wcstofflags(const wchar_t *stringp,
 		    unsigned long *setp, unsigned long *clrp);
@@ -360,12 +362,23 @@ archive_entry_filetype(struct archive_entry *entry)
 }
 
 void
-archive_entry_fflags(struct archive_entry *entry,
-    unsigned long *set, unsigned long *clear)
+archive_entry_fileattrs(struct archive_entry *entry,
+    la_uint64_t *set, la_uint64_t *clear)
 {
 	*set = entry->ae_fflags_set;
 	*clear = entry->ae_fflags_clear;
 }
+
+/* Deprecated */
+void
+archive_entry_fflags(struct archive_entry *entry,
+    unsigned long *set, unsigned long *clear)
+{
+	*set = ae_fflags_to_platform_fflags(entry->ae_fflags_set);
+	*clear = ae_fflags_to_platform_fflags(entry->ae_fflags_clear);
+}
+
+
 
 /*
  * Note: if text was provided, this just returns that text.  If you
@@ -805,6 +818,15 @@ archive_entry_set_filetype(struct archive_entry *entry, unsigned int type)
 void
 archive_entry_set_fflags(struct archive_entry *entry,
     unsigned long set, unsigned long clear)
+{
+	archive_mstring_clean(&entry->ae_fflags_text);
+	entry->ae_fflags_set = ae_platform_fflags_to_fflags(set);
+	entry->ae_fflags_clear = ae_platform_fflags_to_fflags(clear);
+}
+
+void
+archive_entry_set_fileattrs(struct archive_entry *entry,
+    la_uint64_t set, la_uint64_t clear)
 {
 	archive_mstring_clean(&entry->ae_fflags_text);
 	entry->ae_fflags_set = set;
@@ -1697,168 +1719,413 @@ _archive_entry_acl_text_l(struct archive_entry *entry, int flags,
 static const struct flag {
 	const char	*name;
 	const wchar_t	*wname;
-	unsigned long	 set;
-	unsigned long	 clear;
+	la_uint64_t set;
+	la_uint64_t clear;
+	unsigned long platform_set;
+	unsigned long platform_clear;
 } flags[] = {
 	/* Preferred (shorter) names per flag first, all prefixed by "no" */
-#ifdef SF_APPEND
-	{ "nosappnd",	L"nosappnd",		SF_APPEND,	0},
-	{ "nosappend",	L"nosappend",		SF_APPEND,	0},
+	{ "nosappnd",	L"nosappnd",	ARCHIVE_ENTRY_FFL_SAPPEND,	0,
+#if defined(SF_APPEND)
+		SF_APPEND
+#elif defined(FS_APPEND_FL)	/* 'a' */
+		FS_APPEND_FL
+#elif defined(EXT2_APPEND_FL)
+		EXT2_APPEND_FL
+#else
+		0
 #endif
-#if defined(FS_APPEND_FL)			/* 'a' */
-	{ "nosappnd",	L"nosappnd",		FS_APPEND_FL,	0},
-	{ "nosappend",	L"nosappend",		FS_APPEND_FL,	0},
-#elif defined(EXT2_APPEND_FL)			/* 'a' */
-	{ "nosappnd",	L"nosappnd",		EXT2_APPEND_FL,	0},
-	{ "nosappend",	L"nosappend",		EXT2_APPEND_FL,	0},
+		, 0},
+	{ "nosappend",	L"nosappend",	ARCHIVE_ENTRY_FFL_SAPPEND,	0,
+#if defined(SF_APPEND)
+		SF_APPEND
+#elif defined(FS_APPEND_FL)	/* 'a' */
+		FS_APPEND_FL
+#elif defined(EXT2_APPEND_FL)
+		EXT2_APPEND_FL
+#else
+		0
 #endif
-#ifdef SF_ARCHIVED
-	{ "noarch",	L"noarch",		SF_ARCHIVED,	0},
-	{ "noarchived",	L"noarchived",       	SF_ARCHIVED,	0},
+		, 0},
+	{ "noarch",	L"noarch",	ARCHIVE_ENTRY_FFL_SARCHIVED,	0,
+#if defined(SF_ARCHIVED)
+		SF_ARCHIVED
+#else
+		0
 #endif
-#ifdef SF_IMMUTABLE
-	{ "noschg",	L"noschg",		SF_IMMUTABLE,	0},
-	{ "noschange",	L"noschange",		SF_IMMUTABLE,	0},
-	{ "nosimmutable",	L"nosimmutable",	SF_IMMUTABLE,	0},
+		, 0},
+	{ "noarchived",	L"noarchived",	ARCHIVE_ENTRY_FFL_SARCHIVED,	0,
+#if defined(SF_ARCHIVED)
+		SF_ARCHIVED
+#else
+		0
 #endif
-#if defined(FS_IMMUTABLE_FL)			/* 'i' */
-	{ "noschg",	L"noschg",		FS_IMMUTABLE_FL,	0},
-	{ "noschange",	L"noschange",		FS_IMMUTABLE_FL,	0},
-	{ "nosimmutable",	L"nosimmutable",	FS_IMMUTABLE_FL,	0},
-#elif defined(EXT2_IMMUTABLE_FL)		/* 'i' */
-	{ "noschg",	L"noschg",		EXT2_IMMUTABLE_FL,	0},
-	{ "noschange",	L"noschange",		EXT2_IMMUTABLE_FL,	0},
-	{ "nosimmutable",	L"nosimmutable",	EXT2_IMMUTABLE_FL,	0},
+		, 0},
+	{ "noschg",	L"noschg",	ARCHIVE_ENTRY_FFL_SIMMUTABLE,	0,
+#if defined(SF_IMMUTABLE)
+		SF_IMMUTABLE
+#elif defined(FS_IMMUTABLE_FL)	/* 'i' */
+		FS_IMMUTABLE_FL
+#elif defined(EXT2_IMMUTABLE_FL)
+		EXT2_IMMUTABLE_FL
+#else
+		0
 #endif
-#ifdef SF_NOUNLINK
-	{ "nosunlnk",	L"nosunlnk",		SF_NOUNLINK,	0},
-	{ "nosunlink",	L"nosunlink",		SF_NOUNLINK,	0},
+		, 0},
+	{ "noschange",	L"noschange",	ARCHIVE_ENTRY_FFL_SIMMUTABLE,	0,
+#if defined(SF_IMMUTABLE)
+		SF_IMMUTABLE
+#elif defined(FS_IMMUTABLE_FL)	/* 'i' */
+		FS_IMMUTABLE_FL
+#elif defined(EXT2_IMMUTABLE_FL)
+		EXT2_IMMUTABLE_FL
+#else
+		0
 #endif
-#ifdef UF_APPEND
-	{ "nouappnd",	L"nouappnd",		UF_APPEND,	0},
-	{ "nouappend",	L"nouappend",		UF_APPEND,	0},
+		, 0},
+	{ "nosimmutable",L"nosimmutable",ARCHIVE_ENTRY_FFL_SIMMUTABLE,	0,
+#if defined(SF_IMMUTABLE)
+		SF_IMMUTABLE
+#elif defined(FS_IMMUTABLE_FL)	/* 'i' */
+		FS_IMMUTABLE_FL
+#elif defined(EXT2_IMMUTABLE_FL)
+		EXT2_IMMUTABLE_FL
+#else
+		0
 #endif
-#ifdef UF_IMMUTABLE
-	{ "nouchg",	L"nouchg",		UF_IMMUTABLE,	0},
-	{ "nouchange",	L"nouchange",		UF_IMMUTABLE,	0},
-	{ "nouimmutable",	L"nouimmutable",	UF_IMMUTABLE,	0},
+		, 0},
+	{ "nosunlnk",	L"nosunlnk",	ARCHIVE_ENTRY_FFL_SNOUNLINK,	0,
+#if defined(SF_NOUNLINK)
+		SF_NOUNLINK
+#else
+		0
 #endif
-#ifdef UF_NODUMP
-	{ "nodump",	L"nodump",		0,		UF_NODUMP},
+		, 0},
+	{ "nosunlink",	L"nosunlink",	ARCHIVE_ENTRY_FFL_SNOUNLINK,	0,
+#if defined(SF_NOUNLINK)
+		SF_NOUNLINK
+#else
+		0
 #endif
-#if defined(FS_NODUMP_FL)	/* 'd' */
-	{ "nodump",	L"nodump",		0,		FS_NODUMP_FL},
+		, 0},
+	{ "nouappnd",	L"nouappnd",	ARCHIVE_ENTRY_FFL_UAPPEND,	0,
+#if defined(UF_APPEND)
+		UF_APPEND
+#else
+		0
+#endif
+		, 0},
+	{ "nouappend",	L"nouappend",	ARCHIVE_ENTRY_FFL_UAPPEND,	0,
+#if defined(UF_APPEND)
+		UF_APPEND
+#else
+		0
+#endif
+		, 0},
+	{ "nouchg",	L"nouchg",	ARCHIVE_ENTRY_FFL_UIMMUTABLE,	0,
+#if defined(UF_IMMUTABLE)
+		UF_IMMUTABLE
+#else
+		0
+#endif
+		, 0},
+	{ "nouchange",	L"nouchange",	ARCHIVE_ENTRY_FFL_UIMMUTABLE,	0,
+#if defined(UF_IMMUTABLE)
+		UF_IMMUTABLE
+#else
+		0
+#endif
+		, 0},
+	{ "nouimmutable",L"nouimmutable",ARCHIVE_ENTRY_FFL_UIMMUTABLE,	0,
+#if defined(UF_IMMUTABLE)
+		UF_IMMUTABLE
+#else
+		0
+#endif
+		, 0},
+	{ "nodump",	L"nodump",	0, ARCHIVE_ENTRY_FFL_UNODUMP, 0,
+#if defined(UF_NODUMP)
+		UF_NODUMP
+#elif defined(FS_NODUMP_FL)	/* 'd' */
+		FS_NODUMP_FL
 #elif defined(EXT2_NODUMP_FL)
-	{ "nodump",	L"nodump",		0,		EXT2_NODUMP_FL},
+		EXT2_NODUMP_FL
+#else
+		0
 #endif
-#ifdef UF_OPAQUE
-	{ "noopaque",	L"noopaque",		UF_OPAQUE,	0},
+		},
+	{ "noopaque",	L"noopaque",	ARCHIVE_ENTRY_FFL_UOPAQUE,	0,
+#if defined(UF_OPAQUE)
+		UF_OPAQUE
+#else
+		0
 #endif
-#ifdef UF_NOUNLINK
-	{ "nouunlnk",	L"nouunlnk",		UF_NOUNLINK,	0},
-	{ "nouunlink",	L"nouunlink",		UF_NOUNLINK,	0},
+		, 0},
+	{ "nouunlnk",	L"nouunlnk",	ARCHIVE_ENTRY_FFL_UNOUNLINK,	0,
+#if defined(UF_NOUNLINK)
+		UF_NOUNLINK
+#else
+		0
 #endif
-#ifdef UF_COMPRESSED
-	/* Mac OS */
-	{ "nocompressed",	L"nocompressed",	UF_COMPRESSED,	0},
+		, 0},
+	{ "nouunlink",	L"nouunlink",	ARCHIVE_ENTRY_FFL_UNOUNLINK,	0,
+#if defined(UF_NOUNLINK)
+		UF_NOUNLINK
+#else
+		0
 #endif
-#ifdef UF_HIDDEN
-	{ "nohidden",	L"nohidden",		UF_HIDDEN,	0},
-	{ "nouhidden",	L"nouhidden",		UF_HIDDEN,	0},
+		, 0},
+	{ "nocompressed",L"nocompressed",ARCHIVE_ENTRY_FFL_UCOMPRESSED,	0,
+#if defined(UF_COMPRESSED)
+		UF_COMPRESSED
+#else
+		0
 #endif
-#ifdef FILE_ATTRIBUTE_HIDDEN
-	{ "nohidden",	L"nohidden",	FILE_ATTRIBUTE_HIDDEN,	0},
-	{ "nouhidden",	L"nouhidden",	FILE_ATTRIBUTE_HIDDEN,	0},
+		, 0},
+	{ "nohidden",	L"nohidden",	ARCHIVE_ENTRY_FFL_UHIDDEN,	0,
+#if defined(UF_HIDDEN)
+		UF_HIDDEN
+#elif defined(FILE_ATTRIBUTE_HIDDEN)
+		FILE_ATTRIBUTE_HIDDEN
+#else
+		0
 #endif
-#ifdef UF_OFFLINE
-	{ "nooffline",	L"nooffline",		UF_OFFLINE,	0},
-	{ "nouoffline",	L"nouoffline",		UF_OFFLINE,	0},
+		, 0},
+	{ "nouhidden",	L"nouhidden",	ARCHIVE_ENTRY_FFL_UHIDDEN,	0,
+#if defined(UF_HIDDEN)
+		UF_HIDDEN
+#elif defined(FILE_ATTRIBUTE_HIDDEN)
+		FILE_ATTRIBUTE_HIDDEN
+#else
+		0
 #endif
-#ifdef UF_READONLY
-	{ "nordonly",	L"nordonly",		UF_READONLY,	0},
-	{ "nourdonly",	L"nourdonly",		UF_READONLY,	0},
-	{ "noreadonly",	L"noreadonly",		UF_READONLY,	0},
+		, 0},
+	{ "nooffline",	L"nooffline",	ARCHIVE_ENTRY_FFL_UOFFLINE,	0,
+#if defined(UF_OFFLINE)
+		UF_OFFLINE
+#else
+		0
 #endif
-#ifdef FILE_ATTRIBUTE_READONLY
-	{ "nordonly",	L"nordonly",	FILE_ATTRIBUTE_READONLY,	0},
-	{ "nourdonly",	L"nourdonly",	FILE_ATTRIBUTE_READONLY,	0},
-	{ "noreadonly",	L"noreadonly",	FILE_ATTRIBUTE_READONLY,	0},
+		, 0},
+	{ "nouoffline",	L"nouoffline",	ARCHIVE_ENTRY_FFL_UOFFLINE,	0,
+#if defined(UF_OFFLINE)
+		UF_OFFLINE
+#else
+		0
 #endif
-#ifdef UF_SPARSE
-	{ "nosparse",	L"nosparse",		UF_SPARSE,	0},
-	{ "nousparse",	L"nousparse",		UF_SPARSE,	0},
+		, 0},
+	{ "nordonly",	L"nordonly",	ARCHIVE_ENTRY_FFL_UREADONLY,	0,
+#if defined(UF_READONLY)
+		UF_READONLY
+#elif defined(FILE_ATTRIBUTE_READONLY)
+		FILE_ATTRIBUTE_READONLY
+#else
+		0
 #endif
-#ifdef UF_REPARSE
-	{ "noreparse",	L"noreparse",		UF_REPARSE,	0},
-	{ "noureparse",	L"noureparse",		UF_REPARSE,	0},
+		, 0},
+	{ "nourdonly",	L"nourdonly",	ARCHIVE_ENTRY_FFL_UREADONLY,	0,
+#if defined(UF_READONLY)
+		UF_READONLY
+#elif defined(FILE_ATTRIBUTE_READONLY)
+		FILE_ATTRIBUTE_READONLY
+#else
+		0
 #endif
-#ifdef UF_SYSTEM
-	{ "nosystem",	L"nosystem",		UF_SYSTEM,	0},
-	{ "nousystem",	L"nousystem",		UF_SYSTEM,	0},
+		, 0},
+	{ "noreadonly",	L"noreadonly",	ARCHIVE_ENTRY_FFL_UREADONLY,	0,
+#if defined(UF_READONLY)
+		UF_READONLY
+#elif defined(FILE_ATTRIBUTE_READONLY)
+		FILE_ATTRIBUTE_READONLY
+#else
+		0
 #endif
-#ifdef FILE_ATTRIBUTE_SYSTEM
-	{ "nosystem",	L"nosystem",	FILE_ATTRIBUTE_SYSTEM,	0},
-	{ "nousystem",	L"nousystem",	FILE_ATTRIBUTE_SYSTEM,	0},
+		, 0},
+	{ "nosparse",	L"nosparse",	ARCHIVE_ENTRY_FFL_USPARSE,	0,
+#if defined(UF_SPARSE)
+		UF_SPARSE
+#else
+		0
 #endif
-#if defined(FS_UNRM_FL)		/* 'u' */
-	{ "noundel",	L"noundel",		FS_UNRM_FL,	0},
+		, 0},
+	{ "nousparse",	L"nousparse",	ARCHIVE_ENTRY_FFL_USPARSE,	0,
+#if defined(UF_SPARSE)
+		UF_SPARSE
+#else
+		0
+#endif
+		, 0},
+	{ "noreparse",	L"noreparse",	ARCHIVE_ENTRY_FFL_UREPARSE,	0,
+#if defined(UF_REPARSE)
+		UF_REPARSE
+#else
+		0
+#endif
+		, 0},
+	{ "noureparse",	L"noureparse",	ARCHIVE_ENTRY_FFL_UREPARSE,	0,
+#if defined(UF_REPARSE)
+		UF_REPARSE
+#else
+		0
+#endif
+		, 0},
+	{ "nosystem",	L"nosystem",	ARCHIVE_ENTRY_FFL_USYSTEM,	0,
+#if defined(UF_SYSTEM)
+		UF_SYSTEM
+#elif defined(FILE_ATTRIBUTE_SYSTEM)
+		FILE_ATTRIBUTE_SYSTEM
+#else
+		0
+#endif
+		, 0},
+	{ "nousystem",	L"nousystem",	ARCHIVE_ENTRY_FFL_USYSTEM,	0,
+#if defined(UF_SYSTEM)
+		UF_SYSTEM
+#elif defined(FILE_ATTRIBUTE_SYSTEM)
+		FILE_ATTRIBUTE_SYSTEM
+#else
+		0
+#endif
+		, 0},
+	{ "noundel",	L"noundel",	ARCHIVE_ENTRY_FFL_UNRM,		0,
+#if defined(FS_UNRM_FL)	/* 'u' */
+		FS_UNRM_FL
 #elif defined(EXT2_UNRM_FL)
-	{ "noundel",	L"noundel",		EXT2_UNRM_FL,	0},
+		EXT2_UNRM_FL
+#else
+		0
 #endif
-
+		, 0},
+	{ "nocompress",	L"nocompress",  ARCHIVE_ENTRY_FFL_COMPR,	0,
 #if defined(FS_COMPR_FL)	/* 'c' */
-	{ "nocompress",	L"nocompress",       	FS_COMPR_FL,	0},
+		FS_COMPR_FL
 #elif defined(EXT2_COMPR_FL)
-	{ "nocompress",	L"nocompress",       	EXT2_COMPR_FL,	0},
+		EXT2_COMPR_FL
+#else
+		0
 #endif
-
-#if defined(FS_NOATIME_FL)	/* 'A' */
-	{ "noatime",	L"noatime",		0,		FS_NOATIME_FL},
+		, 0},
+	{ "noatime",	L"noatime",	0,	ARCHIVE_ENTRY_FFL_NOATIME, 0,
+#if defined(FS_NOATIME_FL)
+		FS_NOATIME_FL
 #elif defined(EXT2_NOATIME_FL)
-	{ "noatime",	L"noatime",		0,		EXT2_NOATIME_FL},
+		EXT2_NOATIME_FL
+#else
+		0
 #endif
+		},
+	{ "nodirsync",	L"nodirsync",	ARCHIVE_ENTRY_FFL_DIRSYNC,	0,
 #if defined(FS_DIRSYNC_FL)	/* 'D' */
-	{ "nodirsync",	L"nodirsync",		FS_DIRSYNC_FL,		0},
+		FS_DIRSYNC_FL
 #elif defined(EXT2_DIRSYNC_FL)
-	{ "nodirsync",	L"nodirsync",		EXT2_DIRSYNC_FL,	0},
+		EXT2_DIRSYNC_FL
+#else
+		0
 #endif
+		, 0},
+	{ "nojournal-data",L"nojournal-data",ARCHIVE_ENTRY_FFL_JOURNAL_DATA, 0,
 #if defined(FS_JOURNAL_DATA_FL)	/* 'j' */
-	{ "nojournal-data",L"nojournal-data",	FS_JOURNAL_DATA_FL,	0},
-	{ "nojournal",	L"nojournal",		FS_JOURNAL_DATA_FL,	0},
+		FS_JOURNAL_DATA_FL
 #elif defined(EXT3_JOURNAL_DATA_FL)
-	{ "nojournal-data",L"nojournal-data",	EXT3_JOURNAL_DATA_FL,	0},
-	{ "nojournal",	L"nojournal",		EXT3_JOURNAL_DATA_FL,	0},
+		EXT3_JOURNAL_DATA_FL
+#else
+		0
 #endif
+		, 0},
+	{ "nojournal",	L"nojournal",	ARCHIVE_ENTRY_FFL_JOURNAL_DATA,	0,
+#if defined(FS_JOURNAL_DATA_FL)	/* 'j' */
+		FS_JOURNAL_DATA_FL
+#elif defined(EXT3_JOURNAL_DATA_FL)
+		EXT3_JOURNAL_DATA_FL
+#else
+		0
+#endif
+		, 0},
+	{ "nosecdel",	L"nosecdel",	ARCHIVE_ENTRY_FFL_SECRM,	0,
 #if defined(FS_SECRM_FL)	/* 's' */
-	{ "nosecdel",	L"nosecdel",		FS_SECRM_FL,		0},
-	{ "nosecuredeletion",L"nosecuredeletion",FS_SECRM_FL,		0},
+	FS_SECRM_FL
 #elif defined(EXT2_SECRM_FL)
-	{ "nosecdel",	L"nosecdel",		EXT2_SECRM_FL,		0},
-	{ "nosecuredeletion",L"nosecuredeletion",EXT2_SECRM_FL,		0},
+	EXT2_SECRM_FL
+#else
+		0
 #endif
-#if defined(FS_SYNC_FL)		/* 'S' */
-	{ "nosync",	L"nosync",		FS_SYNC_FL,		0},
+		, 0},
+	{ "nosecuredeletion",L"nosecuredeletion",ARCHIVE_ENTRY_FFL_SECRM, 0,
+#if defined(FS_SECRM_FL)	/* 's' */
+	FS_SECRM_FL
+#elif defined(EXT2_SECRM_FL)
+	EXT2_SECRM_FL
+#else
+		0
+#endif
+		, 0},
+	{ "nosync",	L"nosync",	ARCHIVE_ENTRY_FFL_SYNC,		0,
+#if defined(FS_SYNC_FL)	/* 'S' */
+		FS_SYNC_FL
 #elif defined(EXT2_SYNC_FL)
-	{ "nosync",	L"nosync",		EXT2_SYNC_FL,		0},
+		EXT2_SYNC_FL
+#else
+		0
 #endif
+		, 0},
+	{ "notail",	L"notail",	0,	ARCHIVE_ENTRY_FFL_NOTAIL, 0,
 #if defined(FS_NOTAIL_FL)	/* 't' */
-	{ "notail",	L"notail",		0,		FS_NOTAIL_FL},
-#elif defined(EXT2_NOTAIL_FL)
-	{ "notail",	L"notail",		0,		EXT2_NOTAIL_FL},
+		FS_NOTAIL_FL
+#else
+		0
 #endif
+		},
+	{ "notopdir",	L"notopdir",	ARCHIVE_ENTRY_FFL_TOPDIR,	0,
 #if defined(FS_TOPDIR_FL)	/* 'T' */
-	{ "notopdir",	L"notopdir",		FS_TOPDIR_FL,		0},
-#elif defined(EXT2_TOPDIR_FL)
-	{ "notopdir",	L"notopdir",		EXT2_TOPDIR_FL,		0},
+		FS_TOPDIR_FL
+#else
+		0
 #endif
-#ifdef FS_NOCOW_FL	/* 'C' */
-	{ "nocow",	L"nocow",		0,	FS_NOCOW_FL},
+		, 0},
+	{ "nocow",	L"nocow",	0,	ARCHIVE_ENTRY_FFL_NOCOW, 0,
+#if defined(FS_NOCOW_FL)	/* 'C' */
+	FS_NOCOW_FL
+#else
+		0
 #endif
-#ifdef FS_PROJINHERIT_FL	/* 'P' */
-	{ "noprojinherit",L"noprojinherit",	FS_PROJINHERIT_FL,	0},
+		},
+	{ "noprojinherit",L"noprojinherit",ARCHIVE_ENTRY_FFL_PROJINHERIT, 0,
+#if defined(FS_PROJINHERIT_FL)	/* 'P' */
+		FS_PROJINHERIT_FL
+#else
+		0
 #endif
-	{ NULL,		NULL,			0,		0}
+		, 0},
+	{ NULL,		NULL,		0,	0,	0,	0}
 };
+
+/* Convert archive entry file attributes to platform file attributes */
+static unsigned long
+ae_fflags_to_platform_fflags(la_uint64_t fflags) {
+	const struct flag *flag;
+	unsigned long platform_fflags = 0;
+
+	for (flag = flags; flag->name != NULL; flag++) {
+		if ((fflags & (flag->set | flag->clear)) != 0) {
+			platform_fflags |= (flag->platform_set |
+			    flag->platform_clear);
+		}
+	}
+	return (platform_fflags);
+}
+
+static la_uint64_t ae_platform_fflags_to_fflags(unsigned long pfflags) {
+	const struct flag *flag;
+	la_uint64_t fflags = 0;
+
+	for (flag = flags; flag->name != NULL; flag++) {
+		if ((pfflags & (flag->platform_set |
+		    flag->platform_clear)) != 0) {
+			fflags |= (flag->set | flag->clear);
+		}
+	}
+	return (fflags);
+}
 
 /*
  * fflagstostr --
@@ -1866,11 +2133,11 @@ static const struct flag {
  *	are set, return the empty string.
  */
 static char *
-ae_fflagstostr(unsigned long bitset, unsigned long bitclear)
+ae_fflagstostr(la_uint64_t bitset, la_uint64_t bitclear)
 {
 	char *string, *dp;
 	const char *sp;
-	unsigned long bits;
+	la_uint64_t bits;
 	const struct flag *flag;
 	size_t	length;
 
@@ -1920,11 +2187,11 @@ ae_fflagstostr(unsigned long bitset, unsigned long bitclear)
  *	provided string.
  */
 static const char *
-ae_strtofflags(const char *s, unsigned long *setp, unsigned long *clrp)
+ae_strtofflags(const char *s, la_uint64_t *setp, la_uint64_t *clrp)
 {
 	const char *start, *end;
 	const struct flag *flag;
-	unsigned long set, clear;
+	la_uint64_t set, clear;
 	const char *failed;
 
 	set = clear = 0;
@@ -1988,11 +2255,11 @@ ae_strtofflags(const char *s, unsigned long *setp, unsigned long *clrp)
  *	provided string.
  */
 static const wchar_t *
-ae_wcstofflags(const wchar_t *s, unsigned long *setp, unsigned long *clrp)
+ae_wcstofflags(const wchar_t *s, la_uint64_t *setp, la_uint64_t *clrp)
 {
 	const wchar_t *start, *end;
 	const struct flag *flag;
-	unsigned long set, clear;
+	la_uint64_t set, clear;
 	const wchar_t *failed;
 
 	set = clear = 0;

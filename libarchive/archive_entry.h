@@ -67,6 +67,24 @@ typedef int64_t la_int64_t;
 # endif
 #endif
 
+/* Get a suitable unsigned 64-bit integer type. */
+#if !defined(__LA_UINT64_T_DEFINED)
+# if ARCHIVE_VERSION_NUMBER < 4000000
+#define __LA_UINT64_T la_uint64_t
+# endif
+#define __LA_UINT64_T_DEFINED
+# if defined(_WIN32) && !defined(__CYGWIN__) && !defined(__WATCOMC__)
+typedef unsigned __int64 la_uint64_t;
+# else
+#include <unistd.h>
+#  if defined(_SCO_DS) || defined(__osf__)
+typedef unsigned long long la_uint64_t;
+#  else
+typedef uint64_t la_uint64_t;
+#  endif
+# endif
+#endif
+
 /* The la_ssize_t should match the type used in 'struct stat' */
 #if !defined(__LA_SSIZE_T_DEFINED)
 /* Older code relied on the __LA_SSIZE_T macro; after 4.0 we'll switch to the typedef exclusively. */
@@ -249,10 +267,6 @@ __LA_DECL int		 archive_entry_dev_is_set(struct archive_entry *);
 __LA_DECL dev_t		 archive_entry_devmajor(struct archive_entry *);
 __LA_DECL dev_t		 archive_entry_devminor(struct archive_entry *);
 __LA_DECL __LA_MODE_T	 archive_entry_filetype(struct archive_entry *);
-__LA_DECL void		 archive_entry_fflags(struct archive_entry *,
-			    unsigned long * /* set */,
-			    unsigned long * /* clear */);
-__LA_DECL const char	*archive_entry_fflags_text(struct archive_entry *);
 __LA_DECL la_int64_t	 archive_entry_gid(struct archive_entry *);
 __LA_DECL const char	*archive_entry_gname(struct archive_entry *);
 __LA_DECL const char	*archive_entry_gname_utf8(struct archive_entry *);
@@ -314,14 +328,6 @@ __LA_DECL void	archive_entry_set_dev(struct archive_entry *, dev_t);
 __LA_DECL void	archive_entry_set_devmajor(struct archive_entry *, dev_t);
 __LA_DECL void	archive_entry_set_devminor(struct archive_entry *, dev_t);
 __LA_DECL void	archive_entry_set_filetype(struct archive_entry *, unsigned int);
-__LA_DECL void	archive_entry_set_fflags(struct archive_entry *,
-	    unsigned long /* set */, unsigned long /* clear */);
-/* Returns pointer to start of first invalid token, or NULL if none. */
-/* Note that all recognized tokens are processed, regardless. */
-__LA_DECL const char *archive_entry_copy_fflags_text(struct archive_entry *,
-	    const char *);
-__LA_DECL const wchar_t *archive_entry_copy_fflags_text_w(struct archive_entry *,
-	    const wchar_t *);
 __LA_DECL void	archive_entry_set_gid(struct archive_entry *, la_int64_t);
 __LA_DECL void	archive_entry_set_gname(struct archive_entry *, const char *);
 __LA_DECL void	archive_entry_set_gname_utf8(struct archive_entry *, const char *);
@@ -585,6 +591,85 @@ __LA_DECL int	 archive_entry_acl_count(struct archive_entry *, int /* want_type 
 /* There's not yet anything clients can actually do with this... */
 struct archive_acl;
 __LA_DECL struct archive_acl *archive_entry_acl(struct archive_entry *);
+
+/*
+ * File attributes
+ */
+
+/* File flags BSD and OS X */
+#define ARCHIVE_ENTRY_FILEATTR_UNODUMP		0x000000000001
+#define ARCHIVE_ENTRY_FILEATTR_UIMMUTABLE	0x000000000002
+#define ARCHIVE_ENTRY_FILEATTR_UAPPEND		0x000000000004
+#define ARCHIVE_ENTRY_FILEATTR_UOPAQUE		0x000000000008
+#define ARCHIVE_ENTRY_FILEATTR_UNOUNLINK	0x000000000010
+#define ARCHIVE_ENTRY_FILEATTR_UCOMPRESSED	0x000000000020
+#define ARCHIVE_ENTRY_FILEATTR_UTRACKED		0x000000000040
+#define ARCHIVE_ENTRY_FILEATTR_USYSTEM		0x000000000080
+#define ARCHIVE_ENTRY_FILEATTR_USPARSE		0x000000000100
+#define ARCHIVE_ENTRY_FILEATTR_UOFFLINE		0x000000000200
+#define ARCHIVE_ENTRY_FILEATTR_UREPARSE		0x000000000400
+#define ARCHIVE_ENTRY_FILEATTR_UARCHIVE		0x000000000800
+#define ARCHIVE_ENTRY_FILEATTR_UREADONLY	0x000000001000
+#define ARCHIVE_ENTRY_FILEATTR_UHIDDEN		0x000000008000
+#define ARCHIVE_ENTRY_FILEATTR_SARCHIVED	0x000000010000
+#define ARCHIVE_ENTRY_FILEATTR_SIMMUTABLE	0x000000020000
+#define ARCHIVE_ENTRY_FILEATTR_SAPPEND		0x000000040000
+#define ARCHIVE_ENTRY_FILEATTR_SNOUNLINK	0x000000080000
+
+/* File attribues Linux */
+#define ARCHIVE_ENTRY_FILEATTR_APPEND		ARCHIVE_ENTRY_FILEATTR_SAPPEND
+#define	ARCHIVE_ENTRY_FILEATTR_NOATIME		0x000100000000
+#define ARCHIVE_ENTRY_FILEATTR_COMPR		0x000200000000
+#define ARCHIVE_ENTRY_FILEATTR_NOCOW		0x000400000000
+#define ARCHIVE_ENTRY_FILEATTR_NODUMP		ARCHIVE_ENTRY_FILEATTR_UNODUMP
+#define ARCHIVE_ENTRY_FILEATTR_DIRSYNC		0x000800000000
+#define ARCHIVE_ENTRY_FILEATTR_IMMUTABLE        ARCHIVE_ENTRY_FILEATTR_SIMMUTABLE
+#define ARCHIVE_ENTRY_FILEATTR_JOURNAL_DATA	0x001000000000
+#define ARCHIVE_ENTRY_FILEATTR_PROJINHERIT	0x002000000000
+#define ARCHIVE_ENTRY_FILEATTR_SECRM		0x004000000000
+#define ARCHIVE_ENTRY_FILEATTR_SYNC		0x008000000000
+#define ARCHIVE_ENTRY_FILEATTR_NOTAIL		0x010000000000
+#define ARCHIVE_ENTRY_FILEATTR_TOPDIR		0x020000000000
+#define ARCHIVE_ENTRY_FILEATTR_UNRM		0x040000000000
+
+/* File attributes Windows */
+#define ARCHIVE_ENTRY_FILEATTR_READONLY		ARCHIVE_ENTRY_FILEATTR_UREADONLY
+#define ARCHIVE_ENTRY_FILEATTR_HIDDEN		ARCHIVE_ENTRY_FILEATTR_UHIDDEN
+#define ARCHIVE_ENTRY_FILEATTR_SYSTEM		ARCHIVE_ENTRY_FILEATTR_USYSTEM
+
+/* Returns entry file attributes */
+__LA_DECL void archive_entry_fileattrs(struct archive_entry *,
+	    la_uint64_t * /* set */, la_uint64_t * /* clear */);
+/* Returns platform-specific file attributes */
+__LA_DECL void archive_entry_fileattrs_to_platform(la_uint64_t *);
+
+/* Sets entry file attributes */
+__LA_DECL void archive_entry_set_fileattrs(struct archive_entry *,
+	    la_uint64_t /* set */, la_uint64_t /* clear */);
+/* Sets entry file attributes in platform native format
+ * only attributes known to the platform are configured */
+__LA_DECL void archive_entry_set_fileattrs_platform(struct archive_entry *,
+	    unsigned long /* set */, unsigned long /* clear */);
+
+/* Returns pointer to start of first invalid token, or NULL if none. */
+/* Note that all recognized tokens are processed, regardless. */
+__LA_DECL const char *archive_entry_copy_fileattrs_text(struct archive_entry *,
+	    const char *);
+__LA_DECL const wchar_t *archive_entry_copy_fileattrs_text_w(
+	    struct archive_entry *, const wchar_t *);
+/* Returnst file attributes converted to string form */
+__LA_DECL const char	*archive_entry_fileattrs_text(struct archive_entry *);
+
+/* Deprecated file attribute functions, kept for API/ABI compatibility */
+__LA_DECL void archive_entry_fflags(struct archive_entry *,
+	    unsigned long * /* set */, unsigned long * /* clear */);
+__LA_DECL void archive_entry_set_fflags(struct archive_entry *,
+	    unsigned long /* set */, unsigned long /* clear */);
+__LA_DECL const char *archive_entry_copy_fflags_text(struct archive_entry *,
+	    const char *);
+__LA_DECL const wchar_t *archive_entry_copy_fflags_text_w(
+	    struct archive_entry *, const wchar_t *);
+__LA_DECL const char	*archive_entry_fflags_text(struct archive_entry *);
 
 /*
  * extended attributes

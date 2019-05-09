@@ -142,11 +142,13 @@ struct archive_entry {
 	/*
 	 * Use aes here so that we get transparent mbs<->wcs conversions.
 	 */
-	struct archive_mstring ae_fflags_text;	/* Text fflags per fflagstostr(3) */
-	unsigned long ae_fflags_set;		/* Bitmap fflags */
-	unsigned long ae_fflags_clear;
-	struct archive_mstring ae_gname;		/* Name of owning group */
-	struct archive_mstring ae_hardlink;	/* Name of target for hardlink */
+	struct archive_mstring ae_fflags_text;	/* Text fflags per
+						 * fflagstostr(3) */
+	uint64_t ae_fflags_set;			/* Bitmap fflags */
+	uint64_t ae_fflags_clear;
+	struct archive_mstring ae_gname;	/* Name of owning group */
+	struct archive_mstring ae_hardlink;	/* Name of target for
+						 * hardlink */
 	struct archive_mstring ae_pathname;	/* Name of entry */
 	struct archive_mstring ae_symlink;		/* symlink contents */
 	struct archive_mstring ae_uname;		/* Name of owner */
