@@ -169,6 +169,15 @@ __FBSDID("$FreeBSD$");
 #define AT_FDCWD -100
 #endif
 
+#if defined(HAVE_OPENAT) && defined(HAVE_FSTATAT) && \
+    defined(HAVE_LINKAT) && defined(HAVE_SYMLINKAT) && \
+    defined(HAVE_MKDIRAT) && defined(HAVE_MKFIFOAT) && \
+    defined(HAVE_MKNODAT) && defined(HAVE_UNLINKAT) && \
+    defined(HAVE_UTIMENSAT) && defined(HAVE_FCHMODAT) && \
+    defined(HAVE_FCHOWNAT)
+#define AT_FUNCTION_SUPPORT 1
+#endif
+
 struct fixup_entry {
 	struct fixup_entry	*next;
 	struct archive_acl	 acl;
@@ -270,8 +279,12 @@ struct archive_write_disk {
 	int64_t			 total_bytes_written;
 	/* Maximum size of file, -1 if unknown. */
 	int64_t			 filesize;
+	/* Dir fd we operate on */
+	int			 chdir_fd;
 	/* Dir we were in before this restore; only for deep paths. */
 	int			 restore_pwd;
+	/* Remember of original chdir_fd was AT_FDCWD; only for deep paths. */
+	int			 chdir_fdcwd;
 	/* Mode we should use for this entry; affected by _PERM and umask. */
 	mode_t			 mode;
 	/* UID/GID to use in restoring this entry. */
@@ -357,8 +370,8 @@ struct archive_write_disk {
 static int	la_opendirat(int, const char *);
 static void	fsobj_error(int *, struct archive_string *, int, const char *,
 		    const char *);
-static int	check_symlinks_fsobj(char *, int *, struct archive_string *,
-		    int);
+static int	check_symlinks_fsobj(char *, int, int *,
+		    struct archive_string *, int);
 static int	check_symlinks(struct archive_write_disk *);
 static int	create_filesystem_object(struct archive_write_disk *);
 static struct fixup_entry *current_fixup(struct archive_write_disk *,
@@ -386,7 +399,8 @@ static int	set_fflags_platform(struct archive_write_disk *, int fd,
 		    unsigned long fflags_set, unsigned long fflags_clear);
 static int	set_ownership(struct archive_write_disk *);
 static int	set_mode(struct archive_write_disk *, int mode);
-static int	set_time(int, int, const char *, time_t, long, time_t, long);
+static int	set_timeat(int, int, int, const char *, time_t, long, time_t,
+		    long);
 static int	set_times(struct archive_write_disk *, int, int, const char *,
 		    time_t, long, time_t, long, time_t, long, time_t, long);
 static int	set_times_from_entry(struct archive_write_disk *);
@@ -406,6 +420,15 @@ static ssize_t	_archive_write_disk_data(struct archive *, const void *,
 		    size_t);
 static ssize_t	_archive_write_disk_data_block(struct archive *, const void *,
 		    size_t, int64_t);
+
+static void	la_at_func_error(struct archive *, const char *);
+
+static void
+la_at_func_error(struct archive *a, const char *func)
+{
+	archive_set_error(a, ARCHIVE_ERRNO_PROGRAMMER, "Invalid call to %s",
+		func);
+}
 
 static int
 la_opendirat(int fd, const char *path) {
@@ -455,7 +478,16 @@ lazy_stat(struct archive_write_disk *a)
 	 * XXX At this point, symlinks should not be hit, otherwise
 	 * XXX a race occurred.  Do we want to check explicitly for that?
 	 */
-	if (lstat(a->name, &a->st) == 0) {
+#ifdef HAVE_FSTATAT
+	if (fstatat(a->chdir_fd, a->name, &a->st, AT_SYMLINK_NOFOLLOW))
+#else
+	if (a->chdir_fd != AT_FDCWD) {
+		la_at_func_error(&a->archive, "lstat()");
+		return (ARCHIVE_FATAL);
+	}
+	if (lstat(a->name, &a->st) == 0)
+#endif
+	{
 		a->pst = &a->st;
 		return (ARCHIVE_OK);
 	}
@@ -503,6 +535,56 @@ archive_write_disk_set_options(struct archive *_a, int flags)
 	return (ARCHIVE_OK);
 }
 
+int
+archive_write_disk_set_fchdir(struct archive *_a, int fd)
+{
+#ifdef AT_FUNCTION_SUPPORT
+	struct archive_write_disk *a = (struct archive_write_disk *)_a;
+
+	if (fd >= 0 || fd == AT_FDCWD) {
+		if (a->chdir_fd >= 0)
+			close(a->chdir_fd);
+		a->chdir_fd = fd;
+		if (fd == AT_FDCWD)
+			a->chdir_fdcwd = 1;
+		else
+			a->chdir_fdcwd = 0;
+		return (ARCHIVE_OK);
+	} else {
+		errno = EINVAL;
+		return (ARCHIVE_FAILED);
+	}
+#else
+	(void)_a; /* UNUSED */
+	(void)fd; /* UNUSED */
+
+	errno = ENOTSUP;
+	return (ARCHIVE_FAILED);
+#endif
+}
+
+int
+archive_write_disk_set_chdir(struct archive *_a, const char *dir)
+{
+#ifdef AT_FUNCTION_SUPPORT
+	struct archive_write_disk *a = (struct archive_write_disk *)_a;
+	int fd;
+
+	fd = la_opendirat(AT_FDCWD, dir);
+	if (fd < 0) {
+		archive_set_error(&a->archive, errno,
+		    "Couldn't chdir to: %s", dir);
+		return (ARCHIVE_FAILED);
+	}
+	return (archive_write_disk_set_fchdir(_a, fd));
+#else
+	(void)_a; /* UNUSED */
+	(void)dir; /* UNUSED */
+
+	errno = ENOTSUP;
+	return (ARCHIVE_FAILED);
+#endif
+}
 
 /*
  * Extract this entry to disk.
@@ -760,17 +842,31 @@ _archive_write_disk_header(struct archive *_a, struct archive_entry *entry)
 	 * intractable problem.
 	 */
 
-#ifdef HAVE_FCHDIR
 	/* If we changed directory above, restore it here. */
 	if (a->restore_pwd >= 0) {
-		r = fchdir(a->restore_pwd);
-		if (r != 0) {
-			archive_set_error(&a->archive, errno,
-			    "chdir() failure");
-			ret = ARCHIVE_FATAL;
+		if (a->chdir_fd >= 0) {
+			if (a->chdir_fd != a->restore_pwd) {
+				close(a->chdir_fd);
+				if (a->chdir_fdcwd) {
+					close(a->restore_pwd);
+					a->chdir_fd = AT_FDCWD;
+				} else {
+					a->chdir_fd = a->restore_pwd;
+				}
+				a->restore_pwd = -1;
+			}
 		}
-		close(a->restore_pwd);
-		a->restore_pwd = -1;
+#ifdef HAVE_FCHDIR
+		else {
+			r = fchdir(a->restore_pwd);
+			if (r != 0) {
+				archive_set_error(&a->archive, errno,
+				    "chdir() failure");
+				ret = ARCHIVE_FATAL;
+			}
+			close(a->restore_pwd);
+			a->restore_pwd = -1;
+		}
 	}
 #endif
 
@@ -1814,11 +1910,22 @@ _archive_write_disk_finish_entry(struct archive *_a)
 	 * ACLs that prevent attribute changes (including time).
 	 */
 	if (a->todo & TODO_ACLS) {
-		int r2;
-		r2 = archive_write_disk_set_acls(&a->archive, a->fd,
-		    archive_entry_pathname(a->entry),
-		    archive_entry_acl(a->entry),
-		    archive_entry_mode(a->entry));
+		int r2 = ARCHIVE_OK;
+#ifdef HAVE_OPENAT
+		if (a->fd < 0 && a->chdir_fd != AT_FDCWD)
+			a->fd = openat(a->chdir_fd,
+			    archive_entry_pathname(a->entry),
+			    O_WRONLY | O_BINARY | O_CLOEXEC | O_NOFOLLOW);
+#endif
+		if (a->fd < 0 && a->chdir_fd != AT_FDCWD) {
+			fprintf(stderr, "fd: %d, ERRNO: %d\n", a->fd, errno);
+			la_at_func_error(&a->archive, "set_acls()");
+			r2 = ARCHIVE_FAILED;
+		} else
+			r2 = archive_write_disk_set_acls(&a->archive, a->fd,
+			    archive_entry_pathname(a->entry),
+			    archive_entry_acl(a->entry),
+			    archive_entry_mode(a->entry));
 		if (r2 < ret) ret = r2;
 	}
 
@@ -1911,6 +2018,8 @@ archive_write_disk_new(void)
 	a->archive.state = ARCHIVE_STATE_HEADER;
 	a->archive.vtable = archive_write_disk_vtable();
 	a->start_time = time(NULL);
+	a->chdir_fd = AT_FDCWD;
+	a->chdir_fdcwd = 1;
 	/* Query and restore the umask. */
 	umask(a->user_umask = umask(0));
 #ifdef HAVE_GETEUID
@@ -1935,18 +2044,26 @@ archive_write_disk_new(void)
  * object creation is likely to fail, but any error will get handled
  * at that time.
  */
-#if defined(HAVE_FCHDIR) && defined(PATH_MAX)
+#if defined(PATH_MAX) && defined(HAVE_FCHDIR)
 static void
 edit_deep_directories(struct archive_write_disk *a)
 {
 	int ret;
 	char *tail = a->name;
+#ifdef AT_FUNCTION_SUPPORT
+	int fd;
+#endif
 
 	/* If path is short, avoid the open() below. */
 	if (strlen(tail) < PATH_MAX)
 		return;
 
 	/* Try to record our starting dir. */
+#ifdef AT_FUNCTION_SUPPORT
+	if (a->chdir_fd >= 0)
+		a->restore_pwd = a->chdir_fd;
+	else
+#endif
 	a->restore_pwd = open(".", O_RDONLY | O_BINARY | O_CLOEXEC);
 	__archive_ensure_cloexec_flag(a->restore_pwd);
 	if (a->restore_pwd < 0)
@@ -1964,8 +2081,23 @@ edit_deep_directories(struct archive_write_disk *a)
 		/* Create the intermediate dir and chdir to it. */
 		*tail = '\0'; /* Terminate dir portion */
 		ret = create_dir(a, a->name);
-		if (ret == ARCHIVE_OK && chdir(a->name) != 0)
-			ret = ARCHIVE_FAILED;
+		if (ret == ARCHIVE_OK) {
+#ifdef AT_FUNCTION_SUPPORT
+			fd = la_opendirat(a->chdir_fd, a->name);
+			if (fd < 0)
+				ret = ARCHIVE_FAILED;
+			else {
+				ret = ARCHIVE_OK;
+				if (a->chdir_fd != a->restore_pwd)
+					close(a->chdir_fd);
+				a->chdir_fd = fd;
+			}
+#else
+			if (chdir(a->name) != 0) {
+				ret = ARCHIVE_FAILED;
+			}
+#endif
+		}
 		*tail = '/'; /* Restore the / we removed. */
 		if (ret != ARCHIVE_OK)
 			return;
@@ -1996,12 +2128,28 @@ restore_entry(struct archive_write_disk *a)
 		 */
 		if (a->flags & ARCHIVE_EXTRACT_CLEAR_NOCHANGE_FFLAGS)
 			(void)clear_nochange_fflags(a);
-		if (unlink(a->name) == 0) {
+#ifdef HAVE_UNLINKAT
+		if (unlinkat(a->chdir_fd, a->name, 0) == 0)
+#else
+		/* Without unlinkat() a->chdir_fd must always be AT_FDCWD */
+		if (a->chdir_fd != AT_FDCWD) {
+			la_at_func_error(&a->archive, "unlink()");
+			return (ARCHIVE_FATAL);
+		}
+		if (unlink(a->name) == 0)
+#endif
+		{
 			/* We removed it, reset cached stat. */
 			a->pst = NULL;
 		} else if (errno == ENOENT) {
 			/* File didn't exist, that's just as good. */
-		} else if (rmdir(a->name) == 0) {
+		} else
+#ifdef HAVE_UNLINKAT
+		if (unlinkat(a->chdir_fd, a->name, AT_REMOVEDIR) == 0)
+#else
+		if (rmdir(a->name) == 0)
+#endif
+		{
 			/* It was a dir, but now it's gone. */
 			a->pst = NULL;
 		} else {
@@ -2050,7 +2198,16 @@ restore_entry(struct archive_write_disk *a)
 	 */
 	if (en == EISDIR) {
 		/* A dir is in the way of a non-dir, rmdir it. */
-		if (rmdir(a->name) != 0) {
+#ifdef HAVE_UNLINKAT
+		if (unlinkat(a->chdir_fd, a->name, AT_REMOVEDIR) != 0)
+#else
+		if (a->chdir_fd != AT_FDCWD) {
+			la_at_func_error(&a->archive, "rmdir()");
+			return (ARCHIVE_FATAL);
+		}
+		if (rmdir(a->name) != 0)
+#endif
+		{
 			archive_set_error(&a->archive, errno,
 			    "Can't remove already-existing dir");
 			return (ARCHIVE_FAILED);
@@ -2069,14 +2226,37 @@ restore_entry(struct archive_write_disk *a)
 		 * symlink to a dir if the client wants that.  So
 		 * follow the symlink if we're creating a dir.
 		 */
-		if (S_ISDIR(a->mode))
+		if (S_ISDIR(a->mode)) {
+#ifdef HAVE_FSTATAT
+			r = fstatat(a->chdir_fd, a->name, &a->st, 0);
+#else
+			if (a->chdir_fd != AT_FDCWD) {
+				la_at_func_error(&a->archive, "fstatat()");
+				return (ARCHIVE_FATAL);
+			}
 			r = la_stat(a->name, &a->st);
+#endif
+		}
 		/*
 		 * If it's not a dir (or it's a broken symlink),
 		 * then don't follow it.
 		 */
-		if (r != 0 || !S_ISDIR(a->mode))
+		if (r != 0 || !S_ISDIR(a->mode)) {
+#ifdef HAVE_FSTATAT
+			r = fstatat(a->chdir_fd, a->name, &a->st,
+			    AT_SYMLINK_NOFOLLOW);
+#else /* !HAVE_FSTATAT */
+			if (a->chdir_fd != AT_FDCWD) {
+				la_at_func_error(&a->archive, "lstat()");
+				return (ARCHIVE_FAILED);
+			}
+#ifdef HAVE_LSTAT
 			r = lstat(a->name, &a->st);
+#else
+			r = la_stat(a->name, &a->st);
+#endif
+#endif /* !HAVE_FSTATAT */
+		}
 		if (r != 0) {
 			archive_set_error(&a->archive, errno,
 			    "Can't stat existing object");
@@ -2107,7 +2287,16 @@ restore_entry(struct archive_write_disk *a)
 			/* A non-dir is in the way, unlink it. */
 			if (a->flags & ARCHIVE_EXTRACT_CLEAR_NOCHANGE_FFLAGS)
 				(void)clear_nochange_fflags(a);
-			if (unlink(a->name) != 0) {
+#ifdef HAVE_UNLINKAT
+			if (unlinkat(a->chdir_fd, a->name, 0) != 0)
+#else
+			if (a->chdir_fd != AT_FDCWD) {
+				la_at_func_error(&a->archive, "unlink()");
+				return (ARCHIVE_FAILED);
+			}
+			if (unlink(a->name) != 0)
+#endif
+			{
 				archive_set_error(&a->archive, errno,
 				    "Can't unlink already-existing object");
 				return (ARCHIVE_FAILED);
@@ -2119,7 +2308,14 @@ restore_entry(struct archive_write_disk *a)
 			/* A dir is in the way of a non-dir, rmdir it. */
 			if (a->flags & ARCHIVE_EXTRACT_CLEAR_NOCHANGE_FFLAGS)
 				(void)clear_nochange_fflags(a);
-			if (rmdir(a->name) != 0) {
+#ifdef HAVE_UNLINKAT
+			if (unlinkat(a->chdir_fd, a->name, AT_REMOVEDIR))
+#else
+			if (a->chdir_fd != AT_FDCWD)
+				return (ARCHIVE_FAILED);
+			if (rmdir(a->name) != 0)
+#endif
+			{
 				archive_set_error(&a->archive, errno,
 				    "Can't replace existing directory with non-directory");
 				return (ARCHIVE_FAILED);
@@ -2176,7 +2372,7 @@ create_filesystem_object(struct archive_write_disk *a)
 	/* Since link(2) and symlink(2) don't handle modes, we're done here. */
 	linkname = archive_entry_hardlink(a->entry);
 	if (linkname != NULL) {
-#if !HAVE_LINK
+#if !defined(HAVE_LINKAT) && !defined(HAVE_LINK)
 		return (EPERM);
 #else
 		archive_string_init(&error_string);
@@ -2201,8 +2397,8 @@ create_filesystem_object(struct archive_write_disk *a)
 			 */
 			return (EPERM);
 		}
-		r = check_symlinks_fsobj(linkname_copy, &error_number,
-		    &error_string, a->flags);
+		r = check_symlinks_fsobj(linkname_copy, a->chdir_fd,
+		    &error_number, &error_string, a->flags);
 		if (r != ARCHIVE_OK) {
 			archive_set_error(&a->archive, error_number, "%s",
 			    error_string.s);
@@ -2216,7 +2412,16 @@ create_filesystem_object(struct archive_write_disk *a)
 		}
 		free(linkname_copy);
 		archive_string_free(&error_string);
+#ifdef HAVE_LINKAT
+		r = linkat(a->chdir_fd, linkname, a->chdir_fd, a->name,
+		    0) ? errno : 0;
+#else
+		if (a->chdir_fd != AT_FDCWD) {
+			la_at_func_error(&a->archive, "link()");
+			return (ARCHIVE_FATAL);
+		}
 		r = link(linkname, a->name) ? errno : 0;
+#endif
 		/*
 		 * New cpio and pax formats allow hardlink entries
 		 * to carry data, so we may have to open the file
@@ -2233,16 +2438,38 @@ create_filesystem_object(struct archive_write_disk *a)
 			a->todo = 0;
 			a->deferred = 0;
 		} else if (r == 0 && a->filesize > 0) {
-#ifdef HAVE_LSTAT
+#if defined(HAVE_FSTATAT)
+			r = fstatat(a->chdir_fd, a->name, &st,
+			    AT_SYMLINK_NOFOLLOW);
+#elif defined(HAVE_LSTAT)
+			if (a->chdir_fd != AT_FDCWD) {
+				la_at_func_error(&a->archive, "lstat()");
+				return (ARCHIVE_FATAL);
+			}
 			r = lstat(a->name, &st);
 #else
+			if (a->chdir_fd != AT_FDCWD) {
+				la_at_func_error(&a->archive, "stat()");
+				return (ARCHIVE_FATAL);
+			}
 			r = la_stat(a->name, &st);
 #endif
 			if (r != 0)
 				r = errno;
 			else if ((st.st_mode & AE_IFMT) == AE_IFREG) {
+#ifdef HAVE_OPENAT
+				a->fd = openat(a->chdir_fd, a->name,
+				    O_WRONLY | O_TRUNC |
+				    O_BINARY | O_CLOEXEC | O_NOFOLLOW);
+#else
+				if (a->chdir_fd != AT_FDCWD) {
+					la_at_func_error(&a->archive,
+					    "open()");
+					return (ARCHIVE_FAILED);
+				}
 				a->fd = open(a->name, O_WRONLY | O_TRUNC |
 				    O_BINARY | O_CLOEXEC | O_NOFOLLOW);
+#endif
 				__archive_ensure_cloexec_flag(a->fd);
 				if (a->fd < 0)
 					r = errno;
@@ -2253,7 +2480,13 @@ create_filesystem_object(struct archive_write_disk *a)
 	}
 	linkname = archive_entry_symlink(a->entry);
 	if (linkname != NULL) {
-#if HAVE_SYMLINK
+#if defined(HAVE_SYMLINKAT)
+		return symlinkat(linkname, a->chdir_fd, a->name) ? errno : 0;
+#elif defined(HAVE_SYMLINK)
+		if (a->chdir_fd != AT_FDCWD) {
+			la_at_func_error(&a->archive, "symlink()");
+			return (ARCHIVE_FATAL);
+		}
 		return symlink(linkname, a->name) ? errno : 0;
 #else
 		return (EPERM);
@@ -2289,15 +2522,32 @@ create_filesystem_object(struct archive_write_disk *a)
 		/* POSIX requires that we fall through here. */
 		/* FALLTHROUGH */
 	case AE_IFREG:
+#ifdef HAVE_OPENAT
+		a->fd = openat(a->chdir_fd, a->name,
+		    O_WRONLY | O_CREAT | O_EXCL | O_BINARY | O_CLOEXEC, mode);
+#else
+		if (a->chdir_fd != AT_FDCWD) {
+			la_at_func_error(&a->archive, "open()");
+			return (ARCHIVE_FAILED);
+		}
 		a->fd = open(a->name,
 		    O_WRONLY | O_CREAT | O_EXCL | O_BINARY | O_CLOEXEC, mode);
+#endif
 		__archive_ensure_cloexec_flag(a->fd);
 		r = (a->fd < 0);
 		break;
 	case AE_IFCHR:
-#ifdef HAVE_MKNOD
 		/* Note: we use AE_IFCHR for the case label, and
 		 * S_IFCHR for the mknod() call.  This is correct.  */
+#if defined(HAVE_MKNODAT)
+		r = mknodat(a->chdir_fd, a->name, mode | S_IFCHR,
+		    archive_entry_rdev(a->entry));
+		break;
+#elif defined(HAVE_MKNOD)
+		if (a->chdir_fd != AT_FDCWD) {
+			la_at_func_error(&a->archive, "mknod()");
+			return (ARCHIVE_FATAL);
+		}
 		r = mknod(a->name, mode | S_IFCHR,
 		    archive_entry_rdev(a->entry));
 		break;
@@ -2307,7 +2557,15 @@ create_filesystem_object(struct archive_write_disk *a)
 		return (EINVAL);
 #endif /* HAVE_MKNOD */
 	case AE_IFBLK:
-#ifdef HAVE_MKNOD
+#if defined(HAVE_MKNODAT)
+		r = mknodat(a->chdir_fd, a->name, mode | S_IFBLK,
+		    archive_entry_rdev(a->entry));
+		break;
+#elif defined(HAVE_MKNOD)
+		if (a->chdir_fd != AT_FDCWD) {
+			la_at_func_error(&a->archive, "mknod()");
+			return (ARCHIVE_FATAL);
+		}
 		r = mknod(a->name, mode | S_IFBLK,
 		    archive_entry_rdev(a->entry));
 		break;
@@ -2318,7 +2576,15 @@ create_filesystem_object(struct archive_write_disk *a)
 #endif /* HAVE_MKNOD */
 	case AE_IFDIR:
 		mode = (mode | MINIMUM_DIR_MODE) & MAXIMUM_DIR_MODE;
+#ifdef HAVE_MKDIRAT
+		r = mkdirat(a->chdir_fd, a->name, mode);
+#else
+		if (a->chdir_fd != AT_FDCWD) {
+			la_at_func_error(&a->archive, "mkdir()");
+			return (ARCHIVE_FATAL);
+		}
 		r = mkdir(a->name, mode);
+#endif
 		if (r == 0) {
 			/* Defer setting dir times. */
 			a->deferred |= (a->todo & TODO_TIMES);
@@ -2333,7 +2599,13 @@ create_filesystem_object(struct archive_write_disk *a)
 		}
 		break;
 	case AE_IFIFO:
-#ifdef HAVE_MKFIFO
+#if defined(HAVE_MKFIFOAT)
+		r = mkfifoat(a->chdir_fd, a->name, mode);
+#elif defined(HAVE_MKFIFO)
+		if (a->chdir_fd != AT_FDCWD) {
+			la_at_func_error(&a->archive, "mkfifo()");
+			return (ARCHIVE_FATAL);
+		}
 		r = mkfifo(a->name, mode);
 		break;
 #else
@@ -2380,11 +2652,12 @@ _archive_write_disk_close(struct archive *_a)
 {
 	struct archive_write_disk *a = (struct archive_write_disk *)_a;
 	struct fixup_entry *next, *p;
-	int ret;
+	int ret, r;
 
 	archive_check_magic(&a->archive, ARCHIVE_WRITE_DISK_MAGIC,
 	    ARCHIVE_STATE_HEADER | ARCHIVE_STATE_DATA,
 	    "archive_write_disk_close");
+	r = ARCHIVE_OK;
 	ret = _archive_write_disk_finish_entry(&a->archive);
 
 	/* Sort dir list so directories are fixed up in depth-first order. */
@@ -2394,8 +2667,18 @@ _archive_write_disk_close(struct archive *_a)
 		a->pst = NULL; /* Mark stat cache as out-of-date. */
 		if (p->fd < 0 && p->fixup &
 		    (TODO_TIMES | TODO_MODE_BASE | TODO_ACLS | TODO_FFLAGS)) {
-			p->fd = open(p->name,
+#ifdef HAVE_OPENAT
+			p->fd = openat(a->chdir_fd, p->name,
 			    O_WRONLY | O_BINARY | O_NOFOLLOW | O_CLOEXEC);
+#else
+			if (a->chdir_fd != AT_FDCWD) {
+				la_at_func_error(&a->archive, "open()");
+				r = ARCHIVE_FATAL;
+				goto fixup_free;
+			} else
+				p->fd = open(p->name, O_WRONLY | O_BINARY |
+				    O_NOFOLLOW | O_CLOEXEC);
+#endif
 		}
 		if (p->fixup & TODO_TIMES) {
 			set_times(a, p->fd, p->mode, p->name,
@@ -2410,17 +2693,38 @@ _archive_write_disk_close(struct archive *_a)
 				fchmod(p->fd, p->mode);
 			else
 #endif
-			chmod(p->name, p->mode);
+#ifdef HAVE_FCHMODAT
+			fchmodat(a->chdir_fd, p->name, p->mode, 0);
+#else /* !HAVE_FCHMODAT */
+			if (a->chdir_fd != AT_FDCWD) {
+				la_at_func_error(&a->archive, "chmod()");
+				r = ARCHIVE_FATAL;
+				goto fixup_free;
+			} else
+				chmod(p->name, p->mode);
+#endif /* !HAVE_FCHMODAT */
 		}
-		if (p->fixup & TODO_ACLS)
-			archive_write_disk_set_acls(&a->archive, p->fd,
-			    p->name, &p->acl, p->mode);
-		if (p->fixup & TODO_FFLAGS)
-			set_fflags_platform(a, p->fd, p->name,
+		if (p->fixup & TODO_ACLS) {
+			if (p->fd < 0 && a->chdir_fd != AT_FDCWD) {
+				la_at_func_error(&a->archive,
+				    "set_acls()");
+				r = ARCHIVE_FATAL;
+				goto fixup_free;
+			} else {
+				archive_write_disk_set_acls(&a->archive, p->fd,
+				    p->name, &p->acl, p->mode);
+			}
+		}
+		if (p->fixup & TODO_FFLAGS) {
+			r = set_fflags_platform(a, p->fd, p->name,
 			    p->mode, p->fflags_set, 0);
+			if (r == ARCHIVE_FATAL)
+				goto fixup_free;
+		}
 		if (p->fixup & TODO_MAC_METADATA)
 			set_mac_metadata(a, p->name, p->mac_metadata,
 					 p->mac_metadata_size);
+fixup_free:
 		next = p->next;
 		archive_acl_clear(&p->acl);
 		free(p->mac_metadata);
@@ -2431,6 +2735,8 @@ _archive_write_disk_close(struct archive *_a)
 		p = next;
 	}
 	a->fixup_list = NULL;
+	if (r == ARCHIVE_FATAL)
+		return (r);
 	return (ret);
 }
 
@@ -2445,6 +2751,9 @@ _archive_write_disk_free(struct archive *_a)
 	    ARCHIVE_STATE_ANY | ARCHIVE_STATE_FATAL, "archive_write_disk_free");
 	a = (struct archive_write_disk *)_a;
 	ret = _archive_write_disk_close(&a->archive);
+	if (a->chdir_fd >= 0)
+		close(a->chdir_fd);
+	a->chdir_fd = AT_FDCWD;
 	archive_write_disk_set_group_lookup(&a->archive, NULL, NULL, NULL);
 	archive_write_disk_set_user_lookup(&a->archive, NULL, NULL, NULL);
 	archive_entry_free(a->entry);
@@ -2597,13 +2906,14 @@ fsobj_error(int *a_eno, struct archive_string *a_estr,
  * ARCHIVE_OK if there are none, otherwise puts an error in errmsg.
  */
 static int
-check_symlinks_fsobj(char *path, int *a_eno, struct archive_string *a_estr,
-    int flags)
+check_symlinks_fsobj(char *path, int chdir_fd, int *a_eno,
+    struct archive_string *a_estr, int flags)
 {
 #if !defined(HAVE_LSTAT) && \
     !(defined(HAVE_OPENAT) && defined(HAVE_FSTATAT) && defined(HAVE_UNLINKAT))
 	/* Platform doesn't have lstat, so we can't look for symlinks. */
 	(void)path; /* UNUSED */
+	(void)chdir_fd; /* UNUSED */
 	(void)error_number; /* UNUSED */
 	(void)error_string; /* UNUSED */
 	(void)flags; /* UNUSED */
@@ -2616,7 +2926,7 @@ check_symlinks_fsobj(char *path, int *a_eno, struct archive_string *a_estr,
 	char c;
 	int r;
 	struct stat st;
-	int chdir_fd;
+	int curdir_fd;
 #if defined(HAVE_OPENAT) && defined(HAVE_FSTATAT) && defined(HAVE_UNLINKAT)
 	int fd;
 #endif
@@ -2640,9 +2950,13 @@ check_symlinks_fsobj(char *path, int *a_eno, struct archive_string *a_estr,
 	 *  c holds what used to be in *tail
 	 *  last is 1 if this is the last tail
 	 */
-	chdir_fd = la_opendirat(AT_FDCWD, ".");
-	__archive_ensure_cloexec_flag(chdir_fd);
-	if (chdir_fd < 0) {
+	if (chdir_fd == AT_FDCWD)
+		curdir_fd = la_opendirat(AT_FDCWD, ".");
+	else {
+		curdir_fd = chdir_fd;
+	}
+	__archive_ensure_cloexec_flag(curdir_fd);
+	if (curdir_fd < 0) {
 		fsobj_error(a_eno, a_estr, errno,
 		    "Could not open ", path);
 		return (ARCHIVE_FATAL);
@@ -2676,8 +2990,13 @@ check_symlinks_fsobj(char *path, int *a_eno, struct archive_string *a_estr,
 		tail[0] = '\0';
 		/* Check that we haven't hit a symlink. */
 #if defined(HAVE_OPENAT) && defined(HAVE_FSTATAT) && defined(HAVE_UNLINKAT)
-		r = fstatat(chdir_fd, head, &st, AT_SYMLINK_NOFOLLOW);
+		r = fstatat(curdir_fd, head, &st, AT_SYMLINK_NOFOLLOW);
 #else
+		if (chdir_fd != AT_FDCWD) {
+			fsobj_error(a_eno, a_estr, ARCHIVE_ERRNO_PROGRAMMER,
+			    "Invalid call to lstat()", "");
+			return (ARCHIVE_FAILED);
+		}
 		r = lstat(head, &st);
 #endif
 		if (r != 0) {
@@ -2706,15 +3025,22 @@ check_symlinks_fsobj(char *path, int *a_eno, struct archive_string *a_estr,
 		} else if (S_ISDIR(st.st_mode)) {
 			if (!last) {
 #if defined(HAVE_OPENAT) && defined(HAVE_FSTATAT) && defined(HAVE_UNLINKAT)
-				fd = la_opendirat(chdir_fd, head);
+				fd = la_opendirat(curdir_fd, head);
 				if (fd < 0)
 					r = -1;
 				else {
 					r = 0;
-					close(chdir_fd);
-					chdir_fd = fd;
+					if (curdir_fd != chdir_fd)
+						close(curdir_fd);
+					curdir_fd = fd;
 				}
 #else
+				if (chdir_fd != AT_FDCWD) {
+					fsobj_error(a_eno, a_estr,
+					    ARCHIVE_ERRNO_PROGRAMMER,
+					    "Invalid call to chdir()", "");
+					return (ARCHIVE_FAILED);
+				}
 				r = chdir(head);
 #endif
 				if (r != 0) {
@@ -2735,8 +3061,14 @@ check_symlinks_fsobj(char *path, int *a_eno, struct archive_string *a_estr,
 				 * item being extracted.
 				 */
 #if defined(HAVE_OPENAT) && defined(HAVE_FSTATAT) && defined(HAVE_UNLINKAT)
-				r = unlinkat(chdir_fd, head, 0);
+				r = unlinkat(curdir_fd, head, 0);
 #else
+				if (chdir_fd != AT_FDCWD) {
+					fsobj_error(a_eno, a_estr,
+					    ARCHIVE_ERRNO_PROGRAMMER,
+					    "Invalid call to unlink()", "");
+					return (ARCHIVE_FAILED);
+				}
 				r = unlink(head);
 #endif
 				if (r != 0) {
@@ -2770,8 +3102,14 @@ check_symlinks_fsobj(char *path, int *a_eno, struct archive_string *a_estr,
 			} else if (flags & ARCHIVE_EXTRACT_UNLINK) {
 				/* User asked us to remove problems. */
 #if defined(HAVE_OPENAT) && defined(HAVE_FSTATAT) && defined(HAVE_UNLINKAT)
-				r = unlinkat(chdir_fd, head, 0);
+				r = unlinkat(curdir_fd, head, 0);
 #else
+				if (chdir_fd != AT_FDCWD) {
+					fsobj_error(a_eno, a_estr,
+					    ARCHIVE_ERRNO_PROGRAMMER,
+					    "Invalid call to unlink()", "");
+					return (ARCHIVE_FAILED);
+				}
 				r = unlink(head);
 #endif
 				if (r != 0) {
@@ -2793,8 +3131,14 @@ check_symlinks_fsobj(char *path, int *a_eno, struct archive_string *a_estr,
 				 * symlinks.
 				 */
 #if defined(HAVE_OPENAT) && defined(HAVE_FSTATAT) && defined(HAVE_UNLINKAT)
-				r = fstatat(chdir_fd, head, &st, 0);
+				r = fstatat(curdir_fd, head, &st, 0);
 #else
+				if (chdir_fd != AT_FDCWD) {
+					fsobj_error(a_eno, a_estr,
+					    ARCHIVE_ERRNO_PROGRAMMER,
+					    "Invalid call to stat()", "");
+					return (ARCHIVE_FAILED);
+				}
 				r = la_stat(head, &st);
 #endif
 				if (r != 0) {
@@ -2810,15 +3154,23 @@ check_symlinks_fsobj(char *path, int *a_eno, struct archive_string *a_estr,
 					}
 				} else if (S_ISDIR(st.st_mode)) {
 #if defined(HAVE_OPENAT) && defined(HAVE_FSTATAT) && defined(HAVE_UNLINKAT)
-					fd = la_opendirat(chdir_fd, head);
+					fd = la_opendirat(curdir_fd, head);
 					if (fd < 0)
 						r = -1;
 					else {
 						r = 0;
-						close(chdir_fd);
-						chdir_fd = fd;
+						if (curdir_fd != chdir_fd)
+							close(curdir_fd);
+						curdir_fd = fd;
 					}
 #else
+					if (chdir_fd != AT_FDCWD) {
+						fsobj_error(a_eno, a_estr,
+						    ARCHIVE_ERRNO_PROGRAMMER,
+						    "Invalid call to chdir()",
+						    "");
+						return (ARCHIVE_FAILED);
+					}
 					r = chdir(head);
 #endif
 					if (r != 0) {
@@ -2860,18 +3212,18 @@ check_symlinks_fsobj(char *path, int *a_eno, struct archive_string *a_estr,
 #if defined(HAVE_OPENAT) && defined(HAVE_FSTATAT) && defined(HAVE_UNLINKAT)
 	/* If we operate with openat(), fstatat() and unlinkat() there was
 	 * no chdir(), so just close the fd */
-	if (chdir_fd >= 0)
-		close(chdir_fd);
+	if (curdir_fd >= 0 && curdir_fd != chdir_fd)
+		close(curdir_fd);
 #elif HAVE_FCHDIR
 	/* If we changed directory above, restore it here. */
-	if (chdir_fd >= 0) {
-		r = fchdir(chdir_fd);
+	if (curdir_fd >= 0) {
+		r = fchdir(curdir_fd);
 		if (r != 0) {
 			fsobj_error(a_eno, a_estr, errno,
 			    "chdir() failure", "");
 		}
-		close(chdir_fd);
-		chdir_fd = -1;
+		close(curdir_fd);
+		curdir_fd = -1;
 		if (r != 0) {
 			res = (ARCHIVE_FATAL);
 		}
@@ -2893,8 +3245,8 @@ check_symlinks(struct archive_write_disk *a)
 	int error_number;
 	int rc;
 	archive_string_init(&error_string);
-	rc = check_symlinks_fsobj(a->name, &error_number, &error_string,
-	    a->flags);
+	rc = check_symlinks_fsobj(a->name, a->chdir_fd, &error_number,
+	    &error_string, a->flags);
 	if (rc != ARCHIVE_OK) {
 		archive_set_error(&a->archive, error_number, "%s",
 		    error_string.s);
@@ -3153,7 +3505,16 @@ create_dir(struct archive_write_disk *a, char *path)
 	 * here loses the ability to extract through symlinks.  Also note
 	 * that this should not use the a->st cache.
 	 */
-	if (la_stat(path, &st) == 0) {
+#ifdef HAVE_FSTATAT
+	if (fstatat(a->chdir_fd, path, &st, 0) == 0)
+#else
+	if (a->chdir_fd != AT_FDCWD) {
+		la_at_func_error(&a->archive, "stat()");
+		return (ARCHIVE_FATAL);
+	}
+	if (la_stat(path, &st) == 0)
+#endif
+	{
 		if (S_ISDIR(st.st_mode))
 			return (ARCHIVE_OK);
 		if ((a->flags & ARCHIVE_EXTRACT_NO_OVERWRITE)) {
@@ -3194,7 +3555,16 @@ create_dir(struct archive_write_disk *a, char *path)
 	mode = mode_final;
 	mode |= MINIMUM_DIR_MODE;
 	mode &= MAXIMUM_DIR_MODE;
-	if (mkdir(path, mode) == 0) {
+#ifdef HAVE_MKDIRAT
+	if (mkdirat(a->chdir_fd, path, mode) == 0)
+#else
+	if (a->chdir_fd != AT_FDCWD) {
+		la_at_func_error(&a->archive, "mkdir()");
+		return (ARCHIVE_FATAL);
+	}
+	if (mkdir(path, mode) == 0)
+#endif
+	{
 		if (mode != mode_final) {
 			le = new_fixup(a, path);
 			if (le == NULL)
@@ -3211,7 +3581,17 @@ create_dir(struct archive_write_disk *a, char *path)
 	 * don't add it to the fixup list here, as it's already been
 	 * added.
 	 */
-	if (la_stat(path, &st) == 0 && S_ISDIR(st.st_mode))
+#ifdef HAVE_FSTATAT
+	r = fstatat(a->chdir_fd, path, &st, 0);
+#else
+	if (a->chdir_fd != AT_FDCWD) {
+		la_at_func_error(&a->archive, "stat()");
+		return (ARCHIVE_FATAL);
+	}
+	r = la_stat(path, &st);
+#endif
+
+	if (r == 0 && S_ISDIR(st.st_mode))
 		return (ARCHIVE_OK);
 
 	archive_set_error(&a->archive, errno, "Failed to create dir '%s'",
@@ -3254,16 +3634,29 @@ set_ownership(struct archive_write_disk *a)
 		return (ARCHIVE_OK);
 	}
 #endif
-
-	/* We prefer lchown() but will use chown() if that's all we have. */
-	/* Of course, if we have neither, this will always fail. */
-#ifdef HAVE_LCHOWN
+	/* We prefer fchownat() or lchown() but will use chown() if that's all
+	 * we have. Of course, if we have neither, this will always fail. */
+#ifdef HAVE_FCHOWNAT
+	if (fchownat(a->chdir_fd, a->name, a->uid, a->gid,
+	    AT_SYMLINK_NOFOLLOW) == 0) {
+		a->todo &= ~(TODO_OWNER | TODO_SGID_CHECK | TODO_SUID_CHECK);
+		return (ARCHIVE_OK);
+	}
+#elif HAVE_LCHOWN
+	if (a->chdir_fd != AT_FDCWD) {
+		la_at_func_error(&a->archive, "lchown()");
+		return (ARCHIVE_FAILED);
+	}
 	if (lchown(a->name, a->uid, a->gid) == 0) {
 		/* We've set owner and know uid/gid are correct. */
 		a->todo &= ~(TODO_OWNER | TODO_SGID_CHECK | TODO_SUID_CHECK);
 		return (ARCHIVE_OK);
 	}
 #elif HAVE_CHOWN
+	if (a->chdir_fd != AT_FDCWD) {
+		la_at_func_error(&a->archive, "chown()");
+		return (ARCHIVE_FAILED);
+	}
 	if (!S_ISLNK(a->mode) && chown(a->name, a->uid, a->gid) == 0) {
 		/* We've set owner and know uid/gid are correct. */
 		a->todo &= ~(TODO_OWNER | TODO_SGID_CHECK | TODO_SUID_CHECK);
@@ -3281,7 +3674,7 @@ set_ownership(struct archive_write_disk *a)
  * Note: Returns 0 on success, non-zero on failure.
  */
 static int
-set_time(int fd, int mode, const char *name,
+set_timeat(int chdir_fd, int fd, int mode, const char *name,
     time_t atime, long atime_nsec,
     time_t mtime, long mtime_nsec)
 {
@@ -3300,7 +3693,7 @@ set_time(int fd, int mode, const char *name,
 	ts[1].tv_nsec = mtime_nsec;
 	if (fd >= 0)
 		return futimens(fd, ts);
-	return utimensat(AT_FDCWD, name, ts, AT_SYMLINK_NOFOLLOW);
+	return utimensat(chdir_fd, name, ts, AT_SYMLINK_NOFOLLOW);
 
 #elif HAVE_UTIMES
 	/*
@@ -3322,6 +3715,8 @@ set_time(int fd, int mode, const char *name,
 #else
 	(void)fd; /* UNUSED */
 #endif
+	if (chdir_fd != AT_FDCWD)
+		return (ARCHIVE_FATAL);
 #ifdef HAVE_LUTIMES
 	(void)mode; /* UNUSED */
 	return (lutimes(name, times));
@@ -3345,6 +3740,8 @@ set_time(int fd, int mode, const char *name,
 	times.modtime = mtime;
 	if (S_ISLNK(mode))
 		return (ARCHIVE_OK);
+	if (chdir_fd != AT_FDCWD)
+		return (ARCHIVE_FATAL);
 	return (utime(name, &times));
 
 #else
@@ -3424,14 +3821,14 @@ set_times(struct archive_write_disk *a,
 	 */
 	if (birthtime < mtime
 	    || (birthtime == mtime && birthtime_nanos < mtime_nanos))
-		r1 = set_time(fd, mode, name,
+		r1 = set_timeat(a->chdir_fd, fd, mode, name,
 			      atime, atime_nanos,
 			      birthtime, birthtime_nanos);
 #else
 	(void)birthtime; /* UNUSED */
 	(void)birthtime_nanos; /* UNUSED */
 #endif
-	r2 = set_time(fd, mode, name,
+	r2 = set_timeat(a->chdir_fd, fd, mode, name,
 		      atime, atime_nanos,
 		      mtime, mtime_nanos);
 	if (r1 != 0 || r2 != 0) {
@@ -3554,15 +3951,29 @@ set_mode(struct archive_write_disk *a, int mode)
 		 * impact.
 		 */
 #ifdef HAVE_FCHMOD
-		if (a->fd > 0)
+#ifdef HAVE_OPENAT
+		if (a->fd < 0) {
+			a->fd = openat(a->chdir_fd, a->name,
+			    O_WRONLY | O_BINARY | O_NOFOLLOW | O_CLOEXEC);
+		}
+#endif /* HAVE_OPENAT */
+		if (a->fd >= 0)
 			r2 = fchmod(a->fd, mode);
+		else {
+#endif /* HAVE_FCHMOD */
+#if defined(HAVE_FCHMODAT)
+		r2 = fchmodat(a->chdir_fd, a->name, mode, AT_SYMLINK_NOFOLLOW);
+#elif defined(HAVE_LCHMOD)
+		if (a->chdir_fd != AT_FDCWD)
+			r2 = ENOTSUP;
 		else
-#endif
-#ifdef HAVE_LCHMOD
-		r2 = lchmod(a->name, mode);
+			r2 = lchmod(a->name, mode);
 #else
 		/* We don't have lchmod() here and a fd is not given */
 		r2 = 0;
+#endif
+#ifdef HAVE_FCHMOD
+		}
 #endif
 		if (r2 != 0) {
 			switch (errno) {
@@ -3593,11 +4004,21 @@ set_mode(struct archive_write_disk *a, int mode)
 #ifdef HAVE_FCHMOD
 		if (a->fd >= 0)
 			r2 = fchmod(a->fd, mode);
-		else
+		else {
 #endif
 		/* If this platform lacks fchmod(), then
 		 * we'll just use chmod(). */
-		r2 = chmod(a->name, mode);
+#if defined(HAVE_FCHMODAT)
+		r2 = fchmodat(a->chdir_fd, a->name, mode, 0);
+#else
+		if (a->chdir_fd != AT_FDCWD)
+			r2 = ENOTSUP;
+		else
+			r2 = chmod(a->name, mode);
+#endif
+#ifdef HAVE_FCHMOD
+		}
+#endif
 
 		if (r2 != 0) {
 			archive_set_error(&a->archive, errno,
@@ -3769,10 +4190,20 @@ set_fflags_platform(struct archive_write_disk *a, int fd, const char *name,
 	 * pathname to set flags.  We prefer lchflags() but will use
 	 * chflags() if we must.
 	 */
-#ifdef HAVE_LCHFLAGS
+#if defined(HAVE_CHFLAGSAT)
+	if (chflagsat(a->chdir_fd, name, a->st.st_flags,
+	   AT_SYMLINK_NOFOLLOW) == 0)
+		return (ARCHIVE_OK);
+#elif defined(HAVE_LCHFLAGS)
+	if (a->chdir_fd != AT_FDCWD)
+		return (ARCHIVE_FATAL);
 	if (lchflags(name, a->st.st_flags) == 0)
 		return (ARCHIVE_OK);
 #elif defined(HAVE_CHFLAGS)
+	if (a->chdir_fd != AT_FDCWD) {
+		la_at_func_error(&a->archive, "chflags()");
+		return (ARCHIVE_FATAL);
+	}
 	if (S_ISLNK(a->st.st_mode)) {
 		archive_set_error(&a->archive, errno,
 		    "Can't set file flags on symlink.");
@@ -3831,7 +4262,17 @@ set_fflags_platform(struct archive_write_disk *a, int fd, const char *name,
 
 	/* If we weren't given an fd, open it ourselves. */
 	if (myfd < 0) {
-		myfd = open(name, O_RDONLY | O_NONBLOCK | O_BINARY | O_CLOEXEC);
+#ifdef HAVE_OPENAT
+		myfd = openat(a->chdir_fd, name, O_RDONLY | O_NONBLOCK |
+		    O_BINARY | O_CLOEXEC);
+#else
+		if (a->chdir_fd != AT_FDCWD) {
+			la_at_func_error(&a->archive, "open()");
+			return (ARCHIVE_FATAL);
+		}
+		myfd = open(name, O_RDONLY | O_NONBLOCK | O_BINARY |
+		    O_CLOEXEC);
+#endif
 		__archive_ensure_cloexec_flag(myfd);
 	}
 	if (myfd < 0)
@@ -4295,6 +4736,11 @@ set_xattrs(struct archive_write_disk *a)
 			e = fsetea(a->fd, name, value, size, 0);
 #endif
 		} else {
+			if (a->chdir_fd != AT_FDCWD) {
+				la_at_func_error(&a->archive, "lsetxattr()");
+				archive_string_free(&errlist);
+				return (ARCHIVE_FATAL);
+			}
 #if ARCHIVE_XATTR_LINUX
 			e = lsetxattr(archive_entry_pathname(entry),
 			    name, value, size, 0);
@@ -4372,6 +4818,12 @@ set_xattrs(struct archive_write_disk *a)
 				e = extattr_set_fd(a->fd, namespace, name,
 				    value, size);
 			} else {
+				if (a->chdir_fd != AT_FDCWD) {
+					la_at_func_error(&a->archive,
+					    "exattr_set_link()");
+					archive_string_free(&errlist);
+					return (ARCHIVE_FATAL);
+				}
 				e = extattr_set_link(
 				    archive_entry_pathname(entry), namespace,
 				    name, value, size);

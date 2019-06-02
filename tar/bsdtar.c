@@ -173,6 +173,7 @@ main(int argc, char **argv)
 	bsdtar->gid = -1;
 	bsdtar->uid = -1;
 	bsdtar->flags = 0;
+	bsdtar->pending_chdir = NULL;
 	compression = compression2 = '\0';
 	compression_name = compression2_name = NULL;
 	compress_program = NULL;

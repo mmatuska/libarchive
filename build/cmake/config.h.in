@@ -377,6 +377,9 @@ typedef uint64_t uintmax_t;
 /* Define to 1 if you have the `chflags' function. */
 #cmakedefine HAVE_CHFLAGS 1
 
+/* Define to 1 if you have the `chflagsat' function. */
+#cmakedefine HAVE_CHFLAGSAT 1
+
 /* Define to 1 if you have the `chown' function. */
 #cmakedefine HAVE_CHOWN 1
 
@@ -545,8 +548,14 @@ typedef uint64_t uintmax_t;
 /* Define to 1 if you have the `fchmod' function. */
 #cmakedefine HAVE_FCHMOD 1
 
+/* Define to 1 if you have the `fchmodat' function. */
+#cmakedefine HAVE_FCHMODAT 1
+
 /* Define to 1 if you have the `fchown' function. */
 #cmakedefine HAVE_FCHOWN 1
+
+/* Define to 1 if you have the `fchownat' function. */
+#cmakedefine HAVE_FCHOWNAT 1
 
 /* Define to 1 if you have the `fcntl' function. */
 #cmakedefine HAVE_FCNTL 1
@@ -673,6 +682,9 @@ typedef uint64_t uintmax_t;
 
 /* Define to 1 if you have the `attr' library (-lattr). */
 #cmakedefine HAVE_LIBATTR 1
+
+/* Define to 1 if you have the `linkat' function. */
+#cmakedefine HAVE_LINKAT 1
 
 /* Define to 1 if you have the `bsdxml' library (-lbsdxml). */
 #cmakedefine HAVE_LIBBSDXML 1
@@ -831,11 +843,20 @@ typedef uint64_t uintmax_t;
 /* Define to 1 if you have the `mkdir' function. */
 #cmakedefine HAVE_MKDIR 1
 
+/* Define to 1 if you have the `mkdirat' function. */
+#cmakedefine HAVE_MKDIRAT 1
+
 /* Define to 1 if you have the `mkfifo' function. */
 #cmakedefine HAVE_MKFIFO 1
 
+/* Define to 1 if you have the `mkfifoat' function. */
+#cmakedefine HAVE_MKFIFOAT 1
+
 /* Define to 1 if you have the `mknod' function. */
 #cmakedefine HAVE_MKNOD 1
+
+/* Define to 1 if you have the `mknodat' function. */
+#cmakedefine HAVE_MKNODAT 1
 
 /* Define to 1 if you have the `mkstemp' function. */
 #cmakedefine HAVE_MKSTEMP 1
@@ -1023,6 +1044,9 @@ typedef uint64_t uintmax_t;
 
 /* Define to 1 if you have the `symlink' function. */
 #cmakedefine HAVE_SYMLINK 1
+
+/* Define to 1 if you have the `symlinkat' function. */
+#cmakedefine HAVE_SYMLINKAT 1
 
 /* Define to 1 if you have the <sys/acl.h> header file. */
 #cmakedefine HAVE_SYS_ACL_H 1
