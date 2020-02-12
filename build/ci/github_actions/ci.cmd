@@ -1,6 +1,10 @@
 @ECHO OFF
 SET ZLIB_VERSION=1.2.11
 SET BZIP2_VERSION=b7a672291188a6469f71dd13ad14f2f9a7344fc8
+SET XZ_VERSION=5.2.4
+SET ZSTD_VERSION=1.4.4
+SET LZ4_VERSION=1.9.2
+SET LZ4_VERSION_U=1_9_2
 IF NOT "%BE%"=="mingw-gcc" (
   IF NOT "%BE%"=="msvc" (
     ECHO Environment variable BE must be mingw-gcc or msvc
@@ -19,16 +23,47 @@ IF "%1"=="deplibs" (
   )
   CD build_ci\libs
   IF NOT EXIST zlib-%ZLIB_VERSION%.zip (
-    curl -L -o zlib-%ZLIB_VERSION%.zip https://github.com/libarchive/zlib/archive/v%ZLIB_VERSION%.zip
+    ECHO Downloading https://github.com/libarchive/zlib/archive/v%ZLIB_VERSION%.zip
+    curl -L -o zlib-%ZLIB_VERSION%.zip https://github.com/libarchive/zlib/archive/v%ZLIB_VERSION%.zip || EXIT /b 1
   )
   IF NOT EXIST zlib-%ZLIB_VERSION% (
-    tar -x -f zlib-%ZLIB_VERSION%.zip
+    ECHO Unpacking zlib-%ZLIB_VERSION%.zip
+    tar -x -f zlib-%ZLIB_VERSION%.zip || EXIT /b 1
   )
   IF NOT EXIST bzip2-%BZIP2_VERSION%.zip (
-    curl -L -o bzip2-%BZIP2_VERSION%.zip https://github.com/libarchive/bzip2/archive/%BZIP2_VERSION%.zip
+    echo Downloading https://github.com/libarchive/bzip2/archive/%BZIP2_VERSION%.zip
+    curl -L -o bzip2-%BZIP2_VERSION%.zip https://github.com/libarchive/bzip2/archive/%BZIP2_VERSION%.zip || EXIT /b 1
   )
   IF NOT EXIST bzip2-%BZIP2_VERSION% (
-    tar -x -f bzip2-%BZIP2_VERSION%.zip
+    echo Unpacking bzip2-%BZIP2_VERSION%.zip
+    tar -x -f bzip2-%BZIP2_VERSION%.zip || EXIT /b 1
+  )
+  IF NOT EXIST xz-%XZ_VERSION%-windows.zip (
+    echo Downloading https://tukaani.org/xz/xz-%XZ_VERSION%-windows.zip
+    curl -L -o xz-%XZ_VERSION%-windows.zip https://tukaani.org/xz/xz-%XZ_VERSION%-windows.zip || EXIT /b 1
+  )
+  IF NOT EXIST C:\temp\lib\xz (
+    mkdir C:\temp\lib\xz
+    echo Unpacking xz-%XZ_VERSION%-windows.zip
+    tar -x -C C:\temp\lib\xz -f xz-%XZ_VERSION%-windows.zip || EXIT /b 1
+  )
+  IF NOT EXIST lz4_win64_v%LZ4_VERSION_U%.zip (
+    echo Downloading https://github.com/lz4/lz4/releases/download/v%LZ4_VERSION%/lz4_win64_v%LZ4_VERSION_U%.zip
+    curl -L -o lz4_win64_v%LZ4_VERSION_U%.zip https://github.com/lz4/lz4/releases/download/v%LZ4_VERSION%/lz4_win64_v%LZ4_VERSION_U%.zip || EXIT /b 1
+  )
+  IF NOT EXIST C:\temp\lib\lz4 (
+    mkdir C:\temp\lib\lz4
+    echo Unpacking lz4_win64_v%LZ4_VERSION_U%.zip
+    tar -x -C C:\temp\lib\lz4 -f lz4_win64_v%LZ4_VERSION_U%.zip || EXIT /b 1
+  )
+  IF NOT EXIST zstd-v%ZSTD_VERSION%-win64.zip (
+    echo Downloading https://github.com/facebook/zstd/releases/download/v%ZSTD_VERSION%/zstd-v%ZSTD_VERSION%-win64.zip
+    curl -L -o zstd-v%ZSTD_VERSION%-win64.zip https://github.com/facebook/zstd/releases/download/v%ZSTD_VERSION%/zstd-v%ZSTD_VERSION%-win64.zip || EXIT /b 1
+  )
+  IF NOT EXIST C:\temp\lib\zstd (
+    mkdir C:\temp\lib\zstd
+    echo Unpacking zstd-v%ZSTD_VERSION%-win64.zip
+    tar -x -C C:\temp\lib\zstd -f zstd-v%ZSTD_VERSION%-win64.zip
   )
   CD zlib-%ZLIB_VERSION%
   IF "%BE%"=="mingw-gcc" (
@@ -63,11 +98,11 @@ IF "%1"=="deplibs" (
     SET PATH=%MINGWPATH%
     MKDIR build_ci\cmake
     CD build_ci\cmake
-    cmake -G "MinGW Makefiles" -D ZLIB_LIBRARY="C:/Program Files (x86)/zlib/lib/libzlibstatic.a" -D ZLIB_INCLUDE_DIR="C:/Program Files (x86)/zlib/include" -D BZIP2_LIBRARIES="C:/Program Files (x86)/bzip2/lib/libbz2.a" -D BZIP2_INCLUDE_DIR="C:/Program Files (x86)/bzip2/include" ..\.. || EXIT /b 1
+    cmake -G "MinGW Makefiles" -D ZLIB_LIBRARY="C:/Program Files (x86)/zlib/lib/libzlibstatic.a" -D ZLIB_INCLUDE_DIR="C:/Program Files (x86)/zlib/include" -D BZIP2_LIBRARIES="C:/Program Files (x86)/bzip2/lib/libbz2.a" -D BZIP2_INCLUDE_DIR="C:/Program Files (x86)/bzip2/include" -D LIBLZMA_LIBRARY="C:/temp/lib/xz/bin_x86-64/liblzma.a" -D LIBLZMA_INCLUDE_DIR="C:/temp/lib/xz/include" -D LZ4_LIBRARY="C:/temp/lib/lz4/static/liblz4_static.lib" -D LZ4_INCLUDE_DIR="C:/temp/lib/lz4/include" -D ZSTD_LIBRARY="C:/temp/lib/zstd/static/libzstd_static.lib" -D ZSTD_INCLUDE_DIR="C:/temp/lib/zstd/include" ..\.. || EXIT /b 1
   ) ELSE IF "%BE%"=="msvc" (
     MKDIR build_ci\cmake
     CD build_ci\cmake
-    cmake -G "Visual Studio 16 2019" -D CMAKE_BUILD_TYPE="Release" -D ZLIB_LIBRARY="C:/Program Files (x86)/zlib/lib/zlibstatic.lib" -D ZLIB_INCLUDE_DIR="C:/Program Files (x86)/zlib/include" -D BZIP2_LIBRARIES="C:/Program Files (x86)/bzip2/lib/bz2.lib" -D BZIP2_INCLUDE_DIR="C:/Program Files (x86)/bzip2/include" ..\.. || EXIT /b 1
+    cmake -G "Visual Studio 16 2019" -D CMAKE_BUILD_TYPE="Release" -D ZLIB_LIBRARY="C:/Program Files (x86)/zlib/lib/zlibstatic.lib" -D ZLIB_INCLUDE_DIR="C:/Program Files (x86)/zlib/include" -D BZIP2_LIBRARIES="C:/Program Files (x86)/bzip2/lib/bz2.lib" -D BZIP2_INCLUDE_DIR="C:/Program Files (x86)/bzip2/include" -D LIBLZMA_LIBRARY="C:/temp/lib/xz/bin_x86-64/liblzma.a" -D LIBLZMA_INCLUDE_DIR="C:/temp/lib/xz/include" -D ZSTD_LIBRARY="C:/temp/lib/zstd/static/libzstd_static.lib" -D ZSTD_INCLUDE_DIR="C:/temp/lib/zstd/include" ..\.. || EXIT /b 1
   )
 ) ELSE IF "%1%"=="build" (
   IF "%BE%"=="mingw-gcc" (
