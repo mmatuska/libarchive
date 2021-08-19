@@ -2461,7 +2461,7 @@ _archive_write_disk_close(struct archive *_a)
 {
 	struct archive_write_disk *a = (struct archive_write_disk *)_a;
 	struct fixup_entry *next, *p;
-	int fd, ret;
+	int fd, ret, symlink;
 
 	archive_check_magic(&a->archive, ARCHIVE_WRITE_DISK_MAGIC,
 	    ARCHIVE_STATE_HEADER | ARCHIVE_STATE_DATA,
@@ -2472,14 +2472,30 @@ _archive_write_disk_close(struct archive *_a)
 	p = sort_dir_list(a->fixup_list);
 
 	while (p != NULL) {
+		symlink = 0;
 		fd = -1;
 		a->pst = NULL; /* Mark stat cache as out-of-date. */
 		if (p->fixup &
 		    (TODO_TIMES | TODO_MODE_BASE | TODO_ACLS | TODO_FFLAGS)) {
 			fd = open(p->name,
 			    O_WRONLY | O_BINARY | O_NOFOLLOW | O_CLOEXEC);
+			/*
+			 * We must check if we tried to open a symbolic link
+			 * There are different errnos on various platforms.
+			 */
+#if defined(__FreeBSD__) && defined(EMLINK)
+			if (errno == EMLINK)
+#elif defined(__NetBSD__) && defined(EFTYPE)
+			if (errno == EFTYPE)
+#else
+			if (errno == ELOOP)
+#endif
+				symlink = 1;
 		}
 		if (p->fixup & TODO_TIMES) {
+#if !defined(HAVE_UTIMENSAT) && !defined(HAVE_LUTIMES)
+			if (!symlink)
+#endif
 			set_times(a, fd, p->mode, p->name,
 			    p->atime, p->atime_nanos,
 			    p->birthtime, p->birthtime_nanos,
@@ -2492,17 +2508,39 @@ _archive_write_disk_close(struct archive *_a)
 				fchmod(fd, p->mode);
 			else
 #endif
-			chmod(p->name, p->mode);
+#ifdef HAVE_LCHMOD
+			lchmod(p->name, p->mode);
+#else
+			if (!symlink)
+				chmod(p->name, p->mode);
+#endif
 		}
-		if (p->fixup & TODO_ACLS)
+		if (p->fixup & TODO_ACLS) {
+#if !defined(HAVE_ACL_SET_LINK_NP)
+			/*
+			 * Only FreeBSD and MacOS with acl_set_link_np()
+			 * support setting ACLs on symbolic links.
+			 */
+			if (!symlink)
+#endif
 			archive_write_disk_set_acls(&a->archive, fd,
 			    p->name, &p->acl, p->mode);
+		}
 		if (p->fixup & TODO_FFLAGS)
+#if !defined(HAVE_LCHFLAGS)
+			/*
+			 * Only FreeBSD supports flags on symbolic links
+			 * via lchflags(). Linux doesn't support file flags
+			 * on symbolic links.
+			 */
+			if (!symlink)
+#endif
 			set_fflags_platform(a, fd, p->name,
 			    p->mode, p->fflags_set, 0);
 		if (p->fixup & TODO_MAC_METADATA)
 			set_mac_metadata(a, p->name, p->mac_metadata,
 					 p->mac_metadata_size);
+skip_fixup:
 		next = p->next;
 		archive_acl_clear(&p->acl);
 		free(p->mac_metadata);
@@ -3927,7 +3965,8 @@ set_fflags_platform(struct archive_write_disk *a, int fd, const char *name,
 
 	/* If we weren't given an fd, open it ourselves. */
 	if (myfd < 0) {
-		myfd = open(name, O_RDONLY | O_NONBLOCK | O_BINARY | O_CLOEXEC);
+		myfd = open(name, O_RDONLY | O_NONBLOCK | O_BINARY |
+		    O_CLOEXEC | O_NOFOLLOW);
 		__archive_ensure_cloexec_flag(myfd);
 	}
 	if (myfd < 0)
