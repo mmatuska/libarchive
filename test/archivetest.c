@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2019 Martin Matuska
+ * Copyright (c) 2023 Martin Matuska
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without

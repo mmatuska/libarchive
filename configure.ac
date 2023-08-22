@@ -209,7 +209,7 @@ AM_CONDITIONAL([STATIC_BSDCAT], [ test "$static_bsdcat" = yes ])
 #
 # Options for building bsdcpio.
 #
-# Default is not to build bsdcpio, but that can be overridden.
+# Default is to build bsdcpio, but that can be overridden.
 #
 AC_ARG_ENABLE([bsdcpio],
 	[AS_HELP_STRING([--enable-bsdcpio], [enable build of bsdcpio (default)])
@@ -323,6 +323,48 @@ esac
 
 AM_CONDITIONAL([BUILD_BSDUNZIP], [ test "$build_bsdunzip" = yes ])
 AM_CONDITIONAL([STATIC_BSDUNZIP], [ test "$static_bsdunzip" = yes ])
+#
+# Options for building archivetest
+#
+# Default is to not build archivetest, but that can be overridden.
+#
+AC_ARG_ENABLE([archivetest],
+	[AS_HELP_STRING([--enable-archivetest], [enable build of archivetest])
+	AS_HELP_STRING([--enable-archivetest=static], [static build of archivetest])
+	AS_HELP_STRING([--enable-archivetest=shared], [dynamic build of archivetest])
+AS_HELP_STRING([--disable-archivetest], [disable build of archivetest])],
+	[], [enable_archivetest=no])
+
+case "$enable_archivetest" in
+yes)
+	if test "$enable_static" = "no"; then
+	   static_archivetest=no
+	else
+	   static_archivetest=yes
+        fi
+	build_archivetest=yes
+	;;
+dynamic|shared)
+	if test "$enabled_shared" = "no"; then
+	   AC_MSG_FAILURE([Shared linking of archivetest requires shared libarchive])
+	fi
+	build_archivetest=yes
+	;;
+static)
+	build_archivetest=yes
+	static_archivetest=yes
+	;;
+no)
+	build_archivetest=no
+	static_archivetest=no
+	;;
+*)
+	AC_MSG_FAILURE([Unsupported value for --enable-archivetest])
+	;;
+esac
+
+AM_CONDITIONAL([BUILD_ARCHIVETEST], [ test "$build_archivetest" = yes ])
+AM_CONDITIONAL([STATIC_ARCHIVETEST], [ test "$static_archivetest" = yes ])
 
 # Checks for header files.
 AC_HEADER_DIRENT

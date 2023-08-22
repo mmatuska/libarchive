@@ -24,6 +24,9 @@ CURDIR=`pwd`
 SRCDIR="${SRCDIR:-`pwd`}"
 RET=0
 
+CMAKE_ARGS="${CMAKE_ARGS} -DENABLE_ARCHIVETEST=ON"
+CONFIGURE_ARGS="${CONFIGURE_ARGS} --enable-archivetest"
+
 usage () {
 	echo "Usage: $0 [-b autotools|cmake] [-a autogen|configure|build|test|install|distcheck ] [ -a ... ] [ -d builddir ] [-c openssl|nettle|mbedtls] [-s srcdir ]"
 }

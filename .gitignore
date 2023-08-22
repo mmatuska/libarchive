@@ -1,4 +1,4 @@
-*~
+~
 *.o
 *.exe
 *.la
@@ -8,10 +8,12 @@
 .deps/
 .libs/
 bin/
+build_ci
 .dirstamp
 Makefile
 Makefile.in
 aclocal.m4
+archivetest
 autom4te.cache/
 bsdcat
 bsdcpio

@@ -8,8 +8,8 @@ ACLOCAL_AMFLAGS = -I build/autoconf
 #
 lib_LTLIBRARIES=	libarchive.la
 noinst_LTLIBRARIES=	libarchive_fe.la
-bin_PROGRAMS=	$(bsdtar_programs) $(bsdcpio_programs) $(bsdcat_programs) $(bsdunzip_programs)
-man_MANS= $(libarchive_man_MANS) $(bsdtar_man_MANS) $(bsdcpio_man_MANS) $(bsdcat_man_MANS) $(bsdunzip_man_MANS)
+bin_PROGRAMS=	$(bsdtar_programs) $(bsdcpio_programs) $(bsdcat_programs) $(bsdunzip_programs) $(archivetest_programs)
+man_MANS= $(libarchive_man_MANS) $(bsdtar_man_MANS) $(bsdcpio_man_MANS) $(bsdcat_man_MANS) $(bsdunzip_man_MANS) $(archivetest_mans)
 BUILT_SOURCES= libarchive/test/list.h tar/test/list.h cpio/test/list.h cat/test/list.h unzip/test/list.h
 
 #
@@ -51,7 +51,8 @@ EXTRA_DIST= \
 	$(bsdcat_EXTRA_DIST) \
 	$(bsdcat_test_EXTRA_DIST) \
 	$(bsdunzip_EXTRA_DIST) \
-	$(bsdunzip_test_EXTRA_DIST)
+	$(bsdunzip_test_EXTRA_DIST) \
+	$(archivetest_EXTRA_DIST)
 
 # a) Clean out some unneeded files and directories
 # b) Collect all documentation and format it for distribution.
@@ -1467,7 +1468,6 @@ endif
 
 bsdunzip_DEPENDENCIES = libarchive.la libarchive_fe.la
 
-
 if STATIC_BSDUNZIP
 bsdunzip_ldstatic= -static
 bsdunzip_ccstatic= -DLIBARCHIVE_STATIC
@@ -1548,3 +1548,34 @@ bsdunzip_test_EXTRA_DIST= \
 	unzip/test/test_singlefile.zip.uu \
 	unzip/test/test_t_bad.zip.uu \
 	unzip/test/CMakeLists.txt
+
+
+#
+# archivetest
+#
+archivetest_SOURCES=	test/archivetest.c
+
+archivetest_DEPENDENCIES = libarchive.la libarchive_fe.la
+
+if STATIC_ARCHIVETEST
+archivetest_ldstatic= -static
+archivetest_ccstatic= -DLIBARCHIVE_STATIC
+else
+archivetest_ldstatic=
+archivetest_ccstatic=
+endif
+
+archivetest_LDADD= libarchive_fe.la libarchive.la $(LTLIBICONV)
+archivetest_CPPFLAGS= -I$(top_srcdir)/libarchive -I$(top_srcdir)/libarchive_fe $(archivetest_ccstatic) $(PLATFORMCPPFLAGS)
+archivetest_LDFLAGS= $(archivetest_ldstatic) $(GC_SECTIONS)
+
+archivetest_EXTRA_DIST= \
+	archivetest/CMakeLists.txt
+
+if BUILD_ARCHIVETEST
+archivetest_man_MANS=
+archivetest_programs= archivetest
+else
+archivetest_man_MANS=
+archivetest_programs=
+endif
