@@ -1240,16 +1240,19 @@ assertion_file_contains_lines_any_order(const char *file, int line,
 	}
 	expected_count = i;
 	if (expected_count) {
-		expected = malloc(sizeof(char *) * expected_count);
+		expected = calloc(expected_count, sizeof(*expected));
 		if (expected == NULL) {
 			failure_start(pathname, line, "Can't allocate memory");
 			failure_finish(NULL);
-			free(expected);
-			free(buff);
-			return (0);
+			goto cleanup;
 		}
 		for (i = 0; lines[i] != NULL; ++i) {
 			expected[i] = strdup(lines[i]);
+			if (expected[i] == NULL) {
+				failure_start(pathname, line, "Can't allocate memory");
+				failure_finish(NULL);
+				goto cleanup;
+			}
 		}
 	}
 
@@ -1267,9 +1270,7 @@ assertion_file_contains_lines_any_order(const char *file, int line,
 		if (actual == NULL) {
 			failure_start(pathname, line, "Can't allocate memory");
 			failure_finish(NULL);
-			free(expected);
-			free(buff);
-			return (0);
+			goto cleanup;
 		}
 		for (j = 0, p = buff; p < buff + buff_size;
 		    p += 1 + strlen(p)) {
@@ -1282,8 +1283,6 @@ assertion_file_contains_lines_any_order(const char *file, int line,
 
 	/* Erase matching lines from both lists */
 	for (i = 0; i < expected_count; ++i) {
-		if (expected[i] == NULL)
-			continue;
 		for (j = 0; j < actual_count; ++j) {
 			if (actual[j] == NULL)
 				continue;
@@ -1306,9 +1305,9 @@ assertion_file_contains_lines_any_order(const char *file, int line,
 			++actual_failure;
 	}
 	if (expected_failure == 0 && actual_failure == 0) {
-		free(buff);
-		free(expected);
 		free(actual);
+		free(expected);
+		free(buff);
 		return (1);
 	}
 	failure_start(file, line, "File doesn't match: %s", pathname);
@@ -1316,6 +1315,7 @@ assertion_file_contains_lines_any_order(const char *file, int line,
 		if (expected[i] != NULL) {
 			logprintf("  Expected but not present: %s\n", expected[i]);
 			free(expected[i]);
+			expected[i] = NULL;
 		}
 	}
 	for (j = 0; j < actual_count; ++j) {
@@ -1323,9 +1323,15 @@ assertion_file_contains_lines_any_order(const char *file, int line,
 			logprintf("  Present but not expected: %s\n", actual[j]);
 	}
 	failure_finish(NULL);
-	free(buff);
-	free(expected);
+cleanup:
 	free(actual);
+	if (expected != NULL) {
+		for (i = 0; i < expected_count; ++i)
+			if (expected[i] != NULL)
+				free(expected[i]);
+		free(expected);
+	}
+	free(buff);
 	return (0);
 }
 
