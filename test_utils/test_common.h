@@ -313,6 +313,10 @@ int assertion_non_empty_file(const char *, int, const char *);
 int assertion_set_nodump(const char *, int, const char *);
 int assertion_text_file_contents(const char *, int, const char *buff, const char *f);
 int assertion_umask(const char *, int, int);
+
+#if !defined(_WIN32) || defined(__CYGWIN__)
+typedef long suseconds_t;
+#endif
 int assertion_utimes(const char *, int, const char *, time_t, suseconds_t, time_t, suseconds_t);
 int assertion_version(const char*, int, const char *, const char *);
 

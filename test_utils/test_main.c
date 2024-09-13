@@ -2090,7 +2090,6 @@ assertion_umask(const char *file, int line, int mask)
 	umask(mask);
 	return (1);
 }
-
 /* Set times, report failures. */
 int
 assertion_utimes(const char *file, int line, const char *pathname,
@@ -3885,7 +3884,11 @@ int
 main(int argc, char **argv)
 {
 	static const int limit = sizeof(tests) / sizeof(tests[0]);
+#if _MSC_VER
+	int test_set[sizeof(tests) / sizeof(tests[0])];
+#else
 	int test_set[limit];
+#endif
 	int i = 0, j = 0, tests_run = 0, tests_failed = 0, option;
 	size_t testprogdir_len;
 	size_t tmplen;
