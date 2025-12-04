@@ -10,9 +10,9 @@ FreeBSD_task:
       BS: cmake
   matrix:
     freebsd_instance:
-      image_family: freebsd-14-3
+      image_family: freebsd-15-0
     freebsd_instance:
-      image_family: freebsd-13-5
+      image_family: freebsd-14-3
   prepare_script:
   - ./build/ci/cirrus_ci/ci.sh prepare
   configure_script:
@@ -28,8 +28,8 @@ FreeBSD_task:
 
 Windows_Cygwin_task:
   windows_container:
-    image: cirrusci/windowsservercore:2019
-    os_version: 2019
+    image: cirrusci/windowsservercore:2022
+    os_version: 2022
   env:
     BE: cygwin-gcc
   prepare_script:
